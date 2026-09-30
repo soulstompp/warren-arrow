@@ -2,9 +2,12 @@
 //! order, and a certificate beside them shows that the rows written are the rows read.
 
 pub mod certificate;
+pub mod cli;
 #[cfg(feature = "geo")]
 pub mod geo;
 pub mod layout;
+
+pub mod read;
 pub mod value;
 pub mod write;
 

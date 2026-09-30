@@ -92,13 +92,58 @@ impl Type {
     }
 }
 
-/// A level of a key: a column, the month or year of one, or the geo cell of a point.
+/// A level of a key: a column, the month, year or weekday of one, stored or not, or the geo cell of
+/// a point.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(untagged)]
 pub enum Level {
     Column(String),
     Part(Part),
     Cell(Cell),
+    Stored(Stored),
+}
+
+/// A month, a year or a weekday of an instant, ordering the rows and written as a smallint column
+/// named `store`, in place of [`part_column`]'s name. A trial spelling: format 2 does not have it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Stored {
+    pub month: Option<String>,
+    pub year: Option<String>,
+    pub weekday: Option<String>,
+    /// The name of the column the part is written as.
+    pub store: String,
+}
+
+impl Stored {
+    /// A part written under [`part_column`]'s name.
+    pub fn of(p: &Part) -> Stored {
+        let c = Some(p.column().to_string());
+        let (month, year, weekday) = match p {
+            Part::Month(_) => (c, None, None),
+            Part::Year(_) => (None, c, None),
+            Part::Weekday(_) => (None, None, c),
+        };
+        Stored {
+            month,
+            year,
+            weekday,
+            store: part_column(p),
+        }
+    }
+
+    /// The part it stores, or why it names none or more than one.
+    pub fn part(&self) -> Result<Part, String> {
+        match (&self.month, &self.year, &self.weekday) {
+            (Some(c), None, None) => Ok(Part::Month(c.clone())),
+            (None, Some(c), None) => Ok(Part::Year(c.clone())),
+            (None, None, Some(c)) => Ok(Part::Weekday(c.clone())),
+            _ => Err(format!(
+                "stored level {} names no part, or more than one; it names one of month, year and weekday",
+                self.store
+            )),
+        }
+    }
 }
 
 /// The geo cell of a row's point, on a grid of `band`-degree latitude bands and `sector`-degree
@@ -113,21 +158,53 @@ pub struct Cell {
     pub sector: f64,
 }
 
-/// The month (1 to 12) or the year of an instant in UTC, or of a date. It orders the rows and is
-/// never written as a column.
+/// The month (1 to 12), the year or the weekday of an instant in UTC, or of a date. As a level it
+/// orders the rows and is written as a smallint column of its own, named by [`part_column`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Part {
     Month(String),
     Year(String),
+    /// The day of the week, 1 for Monday to 7 for Sunday.
+    Weekday(String),
+}
+
+impl Part {
+    /// The column the part is read from.
+    pub fn column(&self) -> &str {
+        match self {
+            Part::Month(c) | Part::Year(c) | Part::Weekday(c) => c,
+        }
+    }
+
+    /// The part's name: month, year or weekday.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Part::Month(_) => "month",
+            Part::Year(_) => "year",
+            Part::Weekday(_) => "weekday",
+        }
+    }
+}
+
+/// The column a key's part is written as: `<column>_month`, `<column>_year` or
+/// `<column>_weekday`.
+pub fn part_column(p: &Part) -> String {
+    format!("{}_{}", p.column(), p.name())
 }
 
 impl Level {
     /// The columns the level is read from.
     pub fn columns(&self) -> Vec<&str> {
         match self {
-            Level::Column(c) | Level::Part(Part::Month(c)) | Level::Part(Part::Year(c)) => vec![c],
+            Level::Column(c) => vec![c],
+            Level::Part(p) => vec![p.column()],
             Level::Cell(c) => vec![&c.cell],
+            Level::Stored(s) => [&s.month, &s.year, &s.weekday]
+                .into_iter()
+                .flatten()
+                .map(String::as_str)
+                .collect(),
         }
     }
 }
@@ -143,13 +220,52 @@ pub struct Key {
     pub covers: Vec<String>,
 }
 
+/// How a table is cut into pieces.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum Partitions {
+    Range(Range),
+    Phase(Phase),
+}
+
 /// A piece starting at every `every`th row in the order of `range`: each piece holds the rows from
 /// its bound up to the next piece's, and a value is never split across two pieces.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Partitions {
+pub struct Range {
     pub range: String,
     pub every: u64,
+}
+
+/// A piece for each value of a month, a year or a weekday, its directory named
+/// `<column>_<part>=<value>`. A trial spelling: format 2 does not have it.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Phase {
+    pub phase: Part,
+}
+
+impl Partitions {
+    /// The range this table is cut by, if it is cut by one.
+    pub fn range(&self) -> Option<&Range> {
+        match self {
+            Partitions::Range(r) => Some(r),
+            Partitions::Phase(_) => None,
+        }
+    }
+
+    /// The part this table is cut by, if it is cut by one.
+    pub fn phase(&self) -> Option<&Part> {
+        match self {
+            Partitions::Range(_) => None,
+            Partitions::Phase(p) => Some(&p.phase),
+        }
+    }
+}
+
+/// A piece directory's name, for the value `v` of a phase.
+pub fn phase_piece_name(p: &Part, v: i64) -> String {
+    format!("{}_{}={v}", p.column(), p.name())
 }
 
 fn refuse<T>(msg: impl Into<String>) -> Result<T, Error> {
@@ -218,6 +334,31 @@ impl Table {
     /// The table's one key, if it has one.
     pub fn key(&self) -> Option<&Key> {
         self.keys.first()
+    }
+
+    /// The key's months, years and weekdays, in the key's order: the columns written beside the
+    /// layout's own, each under its `store` name or [`part_column`]'s.
+    pub fn stored(&self) -> Vec<Stored> {
+        self.key()
+            .map(|k| {
+                k.levels
+                    .iter()
+                    .filter_map(|l| match l {
+                        Level::Stored(s) => Some(s.clone()),
+                        Level::Part(p) => Some(Stored::of(p)),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Whether the key's first level is a month, a year or a weekday.
+    pub fn led_by_part(&self) -> bool {
+        matches!(
+            self.key().and_then(|k| k.levels.first()),
+            Some(Level::Part(_) | Level::Stored(_))
+        )
     }
 
     fn check(&self) -> Result<(), Error> {
@@ -298,7 +439,25 @@ impl Table {
                 return Err(at(format!("key {} has no level", k.name)));
             }
             let mut levels: Vec<&Level> = Vec::new();
+            let mut stores: HashSet<String> = HashSet::new();
             for l in &k.levels {
+                let written = match l {
+                    Level::Stored(s) => {
+                        s.part().map_err(|e| at(format!("key {}: {e}", k.name)))?;
+                        Some(s.store.clone())
+                    }
+                    Level::Part(p) => Some(part_column(p)),
+                    _ => None,
+                };
+                if let Some(store) = written {
+                    name_ok(&format!("a stored level of {}", self.name), &store)?;
+                    if self.column(&store).is_some() || !stores.insert(store.clone()) {
+                        return Err(at(format!(
+                            "key {}: the level written as {store} names a column the table already has",
+                            k.name
+                        )));
+                    }
+                }
                 let mut cols = Vec::new();
                 for c in l.columns() {
                     cols.push(
@@ -314,7 +473,7 @@ impl Table {
                         )));
                     }
                     Level::Column(_) => {}
-                    Level::Part(_) => {
+                    Level::Part(_) | Level::Stored(_) => {
                         if !matches!(cols[0].ty, Type::Instant | Type::Date) {
                             return Err(at(format!(
                                 "key {}: {} is neither an instant nor a date",
@@ -339,7 +498,30 @@ impl Table {
             }
         }
 
-        if let Some(p) = &self.partitions {
+        if let Some(p) = self.partitions.as_ref().and_then(Partitions::phase) {
+            let col = self.column(p.column()).ok_or_else(|| {
+                at(format!(
+                    "the pieces are cut by the {} of {}, which is not a column",
+                    p.name(),
+                    p.column()
+                ))
+            })?;
+            if !matches!(col.ty, Type::Instant | Type::Date) {
+                return Err(at(format!(
+                    "the pieces are cut by the {} of {}, which is neither an instant nor a date",
+                    p.name(),
+                    col.name
+                )));
+            }
+            if col.nullable {
+                return Err(at(format!(
+                    "the pieces are cut by the {} of {}, which may hold null; the layout must say \"null\": false",
+                    p.name(),
+                    col.name
+                )));
+            }
+        }
+        if let Some(p) = self.partitions.as_ref().and_then(Partitions::range) {
             let col = self.column(&p.range).ok_or_else(|| {
                 at(format!(
                     "the partitions range over {}, which is not a column",

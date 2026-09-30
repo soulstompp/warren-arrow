@@ -277,6 +277,7 @@ fn rows_are_written_in_cell_order_and_each_row_groups_box_holds_its_cells() {
         &points(),
         &Options {
             max_row_group_rows: Some(3),
+            ..Options::default()
         },
     );
     let gs = groups(&w);

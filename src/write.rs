@@ -1,13 +1,13 @@
 //! Writing one table: its rows in the layout's types, in its key's order, cut into pieces, each
 //! piece a directory holding one Parquet file, and the certificate read back from the files.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, AsArray, Int32Array, Int64Array, RecordBatch, StringArray, UInt32Array,
+    Array, ArrayRef, AsArray, Int16Array, Int64Array, RecordBatch, StringArray, UInt32Array,
     UInt64Array,
 };
 use arrow::compute::{SortOptions, concat_batches, take};
@@ -21,7 +21,9 @@ use parquet::file::properties::{EnabledStatistics, WriterProperties};
 
 use crate::Error;
 use crate::certificate::Certificate;
-use crate::layout::{Cell, Layout, Level, Part, Table, Type};
+use crate::layout::{
+    Cell, Layout, Level, Part, Partitions, Table, Type, part_column, phase_piece_name,
+};
 use crate::value::{self, Reader, Value};
 
 /// The file each piece's directory holds.
@@ -36,6 +38,9 @@ pub const CERTIFICATE_FILE: &str = "certificate.parquet";
 pub struct Options {
     /// The most rows in a row group. `None` leaves the parquet crate's default.
     pub max_row_group_rows: Option<usize>,
+    /// End a row group wherever the key's first level changes value, so that no row group holds
+    /// two of its values. A key led by a month, a year or a weekday always does.
+    pub row_group_per_block: bool,
 }
 
 /// One piece as written.
@@ -46,6 +51,8 @@ pub struct Piece {
     pub from: Option<String>,
     /// The least value of the next piece; `None` for the last.
     pub to: Option<String>,
+    /// The phase's value, for a table cut by a phase.
+    pub value: Option<i64>,
     pub rows: u64,
     pub row_groups: u64,
 }
@@ -90,7 +97,7 @@ pub fn write_table(
     }
 
     let rows = source.num_rows();
-    let batch = typed(table, source)?;
+    let batch = with_stored(table, typed(table, source)?)?;
     #[cfg(feature = "geo")]
     if table.columns.iter().any(|c| c.ty == Type::Geography) {
         crate::geo::install()?;
@@ -98,7 +105,7 @@ pub fn write_table(
     let source_certificate = Certificate::of(table, source)?;
     unique_primary_key(table, &batch)?;
     let order = key_order(table, &batch)?;
-    let (pieces, bounds) = cut(table, &batch, &order)?;
+    let (pieces, bounds, values) = cut(table, &batch, &order)?;
 
     let partial = into.join(format!(".{}.partial", table.name));
     if partial.exists() {
@@ -108,40 +115,59 @@ pub fn write_table(
 
     let props = properties(table, &batch.schema(), opts);
     let width = pieces.len().to_string().len();
-    let range = table.partitions.as_ref().map(|p| {
-        batch
-            .column_by_name(&p.range)
-            .expect("checked with the layout")
-            .clone()
-    });
+    let range = table
+        .partitions
+        .as_ref()
+        .and_then(Partitions::range)
+        .map(|p| {
+            batch
+                .column_by_name(&p.range)
+                .expect("checked with the layout")
+                .clone()
+        });
+    let phase = table.partitions.as_ref().and_then(Partitions::phase);
+    let first = if opts.row_group_per_block || table.led_by_part() {
+        first_level(table, &batch)?
+    } else {
+        None
+    };
     let mut written_pieces = Vec::with_capacity(pieces.len());
     for (i, rows_of_piece) in pieces.iter().enumerate() {
-        let piece_name = format!("p{:0width$}", i + 1);
+        let piece_name = match (phase, values.get(i)) {
+            (Some(p), Some(v)) => phase_piece_name(p, *v),
+            _ => format!("p{:0width$}", i + 1),
+        };
         let piece_dir = partial.join(&piece_name);
         fs::create_dir(&piece_dir)?;
-        let indices = UInt32Array::from(rows_of_piece.clone());
-        let columns = batch
-            .columns()
-            .iter()
-            .map(|c| take(c.as_ref(), &indices, None))
-            .collect::<Result<Vec<_>, _>>()?;
-        let piece_batch = RecordBatch::try_new(batch.schema(), columns)?;
         let file = File::create(piece_dir.join(ROWS_FILE))?;
         let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props.clone()))?;
-        writer.write(&piece_batch)?;
+        for block in blocks(rows_of_piece, first.as_ref()) {
+            let indices = UInt32Array::from(block.to_vec());
+            let columns = batch
+                .columns()
+                .iter()
+                .map(|c| take(c.as_ref(), &indices, None))
+                .collect::<Result<Vec<_>, _>>()?;
+            writer.write(&RecordBatch::try_new(batch.schema(), columns)?)?;
+            if first.is_some() {
+                writer.flush()?;
+            }
+        }
         let meta = writer.close()?;
         written_pieces.push(Piece {
             name: piece_name,
             from: None,
             to: None,
+            value: values.get(i).copied(),
             rows: rows_of_piece.len() as u64,
             row_groups: meta.num_row_groups() as u64,
         });
     }
-    if let Some(range) = &range {
-        let col = table
-            .column(&table.partitions.as_ref().expect("a range").range)
-            .expect("checked with the layout");
+    if let (Some(range), Some(p)) = (
+        &range,
+        table.partitions.as_ref().and_then(Partitions::range),
+    ) {
+        let col = table.column(&p.range).expect("checked with the layout");
         let reader = Reader::new(&table.name, col, range.as_ref())?;
         for i in 0..written_pieces.len() {
             if i > 0 {
@@ -219,6 +245,33 @@ fn typed(table: &Table, source: &RecordBatch) -> Result<RecordBatch, Error> {
     )?)
 }
 
+/// The batch with each stored level's part written as a smallint column after the layout's own.
+fn with_stored(table: &Table, batch: RecordBatch) -> Result<RecordBatch, Error> {
+    let stored = table.stored();
+    if stored.is_empty() {
+        return Ok(batch);
+    }
+    let schema = batch.schema();
+    let mut fields: Vec<Field> = schema.fields().iter().map(|f| f.as_ref().clone()).collect();
+    let mut columns = batch.columns().to_vec();
+    for s in stored {
+        let p = s.part().map_err(Error::Refused)?;
+        let nullable = table.column(p.column()).expect("checked").nullable;
+        let values = part_values(table, &batch, &p)
+            .into_iter()
+            .map(|v| {
+                v.map(|v| i16::try_from(v).expect("a month, a weekday or a year fits a smallint"))
+            })
+            .collect::<Int16Array>();
+        fields.push(Field::new(&s.store, DataType::Int16, nullable));
+        columns.push(Arc::new(values));
+    }
+    Ok(RecordBatch::try_new(
+        Arc::new(Schema::new(fields)),
+        columns,
+    )?)
+}
+
 fn converter(arrays: &[ArrayRef]) -> Result<Rows, Error> {
     let options = SortOptions {
         descending: false,
@@ -260,6 +313,22 @@ fn unique_primary_key(table: &Table, batch: &RecordBatch) -> Result<(), Error> {
     Ok(())
 }
 
+/// A level's value for each row.
+fn level_array(table: &Table, batch: &RecordBatch, l: &Level) -> Result<ArrayRef, Error> {
+    Ok(match l {
+        Level::Column(c) => batch
+            .column_by_name(c)
+            .expect("typed by the layout")
+            .clone(),
+        Level::Part(p) => part(table, batch, p),
+        Level::Cell(c) => cell(table, batch, c)?,
+        Level::Stored(s) => batch
+            .column_by_name(&s.store)
+            .expect("written by with_stored")
+            .clone(),
+    })
+}
+
 /// The arrays the rows are ordered by: the key's levels, then the primary key, then every other
 /// column in the layout's order, so that no two different rows tie.
 fn order_arrays(table: &Table, batch: &RecordBatch) -> Result<Vec<ArrayRef>, Error> {
@@ -267,18 +336,9 @@ fn order_arrays(table: &Table, batch: &RecordBatch) -> Result<Vec<ArrayRef>, Err
     let mut used: HashSet<&str> = HashSet::new();
     if let Some(k) = table.key() {
         for l in &k.levels {
-            match l {
-                Level::Column(c) => {
-                    arrays.push(
-                        batch
-                            .column_by_name(c)
-                            .expect("typed by the layout")
-                            .clone(),
-                    );
-                    used.insert(c);
-                }
-                Level::Part(p) => arrays.push(part(table, batch, p)),
-                Level::Cell(c) => arrays.push(cell(table, batch, c)?),
+            arrays.push(level_array(table, batch, l)?);
+            if let Level::Column(c) = l {
+                used.insert(c);
             }
         }
     }
@@ -307,79 +367,118 @@ fn key_order(table: &Table, batch: &RecordBatch) -> Result<Vec<u32>, Error> {
     Ok(order)
 }
 
-/// A month or a year, computed from an instant or a date for each row.
-fn part(table: &Table, batch: &RecordBatch, p: &Part) -> ArrayRef {
-    let (c, month) = match p {
-        Part::Month(c) => (c, true),
-        Part::Year(c) => (c, false),
+/// The key's first level, compared row by row, for ending a row group wherever it changes.
+fn first_level(table: &Table, batch: &RecordBatch) -> Result<Option<Rows>, Error> {
+    let Some(first) = table.key().and_then(|k| k.levels.first()) else {
+        return Ok(None);
     };
-    let a = batch.column_by_name(c).expect("typed by the layout");
-    let day = |i: usize| -> Option<i64> {
-        if a.is_null(i) {
-            return None;
-        }
-        Some(match table.column(c).expect("checked with the layout").ty {
-            Type::Instant => value::day_of(a.as_primitive::<TimestampMicrosecondType>().value(i)),
-            _ => i64::from(a.as_primitive::<Date32Type>().value(i)),
-        })
-    };
-    if month {
-        Arc::new(
-            (0..a.len())
-                .map(|i| day(i).map(|d| value::year_month(d).1 as i32))
-                .collect::<Int32Array>(),
-        )
-    } else {
-        Arc::new(
-            (0..a.len())
-                .map(|i| day(i).map(|d| value::year_month(d).0))
-                .collect::<Int64Array>(),
-        )
-    }
+    Ok(Some(converter(&[level_array(table, batch, first)?])?))
 }
 
-/// The rows of each piece, in key order, and the row holding each piece's least value after the
-/// first. A piece starts at every `every`th row in the range
-/// column's order, at a value greater than the one the piece before it starts at, so a value is
-/// never split across two pieces and no piece is empty. With no partitions, one piece. A table with
-/// no rows is one piece with none.
+/// A piece's rows, cut wherever the first level changes value, or whole.
+fn blocks<'a>(rows: &'a [u32], first: Option<&Rows>) -> Vec<&'a [u32]> {
+    let Some(first) = first else {
+        return vec![rows];
+    };
+    let mut out = Vec::new();
+    let mut start = 0;
+    for i in 1..rows.len() {
+        if first.row(rows[i] as usize) != first.row(rows[i - 1] as usize) {
+            out.push(&rows[start..i]);
+            start = i;
+        }
+    }
+    if start < rows.len() || rows.is_empty() {
+        out.push(&rows[start..]);
+    }
+    out
+}
+
+/// A month, a year or a weekday, computed from an instant or a date for each row.
+pub fn part_values(table: &Table, batch: &RecordBatch, p: &Part) -> Vec<Option<i64>> {
+    let c = p.column();
+    let a = batch.column_by_name(c).expect("typed by the layout");
+    let is_instant = table.column(c).expect("checked with the layout").ty == Type::Instant;
+    (0..a.len())
+        .map(|i| {
+            if a.is_null(i) {
+                return None;
+            }
+            let day = if is_instant {
+                value::day_of(a.as_primitive::<TimestampMicrosecondType>().value(i))
+            } else {
+                i64::from(a.as_primitive::<Date32Type>().value(i))
+            };
+            Some(value::part_of_day(p, day))
+        })
+        .collect()
+}
+
+fn part(table: &Table, batch: &RecordBatch, p: &Part) -> ArrayRef {
+    Arc::new(Int64Array::from(part_values(table, batch, p)))
+}
+
+/// The rows of each piece, in key order; the row holding each range piece's least value after the
+/// first; and each phase piece's value.
+///
+/// Cut by a range, a piece starts at every `every`th row in the range column's order, at a value
+/// greater than the one the piece before it starts at, so a value is never split across two
+/// pieces and no piece is empty. Cut by a phase, there is a piece for each of its values, in the
+/// values' order. With no partitions, one piece. A table with no rows is one piece with none.
+#[allow(clippy::type_complexity)]
 fn cut(
     table: &Table,
     batch: &RecordBatch,
     order: &[u32],
-) -> Result<(Vec<Vec<u32>>, Vec<u32>), Error> {
+) -> Result<(Vec<Vec<u32>>, Vec<u32>, Vec<i64>), Error> {
     let n = batch.num_rows();
     if n == 0 {
-        return Ok((vec![Vec::new()], Vec::new()));
+        return Ok((vec![Vec::new()], Vec::new(), Vec::new()));
     }
-    let Some(p) = &table.partitions else {
-        return Ok((vec![order.to_vec()], Vec::new()));
-    };
-    let range = batch
-        .column_by_name(&p.range)
-        .expect("typed by the layout")
-        .clone();
-    let rows = converter(&[range])?;
-    let mut by_range: Vec<usize> = (0..n).collect();
-    by_range.sort_by(|a, b| rows.row(*a).cmp(&rows.row(*b)));
-    let every = usize::try_from(p.every).unwrap_or(usize::MAX);
-    let mut bounds: Vec<usize> = Vec::new();
-    let mut at = every;
-    while at < n {
-        let candidate = by_range[at];
-        let previous = bounds.last().copied().unwrap_or(by_range[0]);
-        if rows.row(candidate) > rows.row(previous) {
-            bounds.push(candidate);
+    match &table.partitions {
+        None => Ok((vec![order.to_vec()], Vec::new(), Vec::new())),
+        Some(Partitions::Phase(ph)) => {
+            let values = part_values(table, batch, &ph.phase);
+            let mut by_value: BTreeMap<i64, Vec<u32>> = BTreeMap::new();
+            for &i in order {
+                let v = values[i as usize].expect("the phase's column holds no null");
+                by_value.entry(v).or_default().push(i);
+            }
+            let keys = by_value.keys().copied().collect();
+            Ok((by_value.into_values().collect(), Vec::new(), keys))
         }
-        at = at.saturating_add(every);
+        Some(Partitions::Range(p)) => {
+            let range = batch
+                .column_by_name(&p.range)
+                .expect("typed by the layout")
+                .clone();
+            let rows = converter(&[range])?;
+            let mut by_range: Vec<usize> = (0..n).collect();
+            by_range.sort_by(|a, b| rows.row(*a).cmp(&rows.row(*b)));
+            let every = usize::try_from(p.every).unwrap_or(usize::MAX);
+            let mut bounds: Vec<usize> = Vec::new();
+            let mut at = every;
+            while at < n {
+                let candidate = by_range[at];
+                let previous = bounds.last().copied().unwrap_or(by_range[0]);
+                if rows.row(candidate) > rows.row(previous) {
+                    bounds.push(candidate);
+                }
+                at = at.saturating_add(every);
+            }
+            let mut pieces = vec![Vec::new(); bounds.len() + 1];
+            for &i in order {
+                let v = rows.row(i as usize);
+                let piece = bounds.partition_point(|&b| rows.row(b) <= v);
+                pieces[piece].push(i);
+            }
+            Ok((
+                pieces,
+                bounds.into_iter().map(|b| b as u32).collect(),
+                Vec::new(),
+            ))
+        }
     }
-    let mut pieces = vec![Vec::new(); bounds.len() + 1];
-    for &i in order {
-        let v = rows.row(i as usize);
-        let piece = bounds.partition_point(|&b| rows.row(b) <= v);
-        pieces[piece].push(i);
-    }
-    Ok((pieces, bounds.into_iter().map(|b| b as u32).collect()))
 }
 
 fn properties(table: &Table, schema: &SchemaRef, opts: &Options) -> WriterProperties {
@@ -390,7 +489,9 @@ fn properties(table: &Table, schema: &SchemaRef, opts: &Options) -> WriterProper
             for l in &k.levels {
                 match l {
                     Level::Column(c) => sorting.push(index(c)),
-                    Level::Part(_) | Level::Cell(_) => break,
+                    Level::Stored(s) => sorting.push(index(&s.store)),
+                    Level::Part(p) => sorting.push(index(&part_column(p))),
+                    Level::Cell(_) => break,
                 }
             }
         }
@@ -429,26 +530,31 @@ fn write_pieces_file(
     let mut columns: Vec<ArrayRef> = vec![Arc::new(StringArray::from_iter_values(
         pieces.iter().map(|p| p.name.as_str()),
     ))];
-    if let Some(range) = range {
+    if let (Some(range), Some(p)) = (range, table.partitions.as_ref().and_then(Partitions::range)) {
         let from: UInt32Array = (0..pieces.len())
             .map(|i| (i > 0).then(|| bounds[i - 1]))
             .collect();
         let to: UInt32Array = (0..pieces.len())
             .map(|i| (i + 1 < pieces.len()).then(|| bounds[i]))
             .collect();
-        let name = &table.partitions.as_ref().expect("a range").range;
         fields.push(Field::new(
-            format!("from_{name}"),
+            format!("from_{}", p.range),
             range.data_type().clone(),
             true,
         ));
         columns.push(take(range.as_ref(), &from, None)?);
         fields.push(Field::new(
-            format!("to_{name}"),
+            format!("to_{}", p.range),
             range.data_type().clone(),
             true,
         ));
         columns.push(take(range.as_ref(), &to, None)?);
+    }
+    if let Some(ph) = table.partitions.as_ref().and_then(Partitions::phase) {
+        fields.push(Field::new(ph.name(), DataType::Int64, true));
+        columns.push(Arc::new(
+            pieces.iter().map(|p| p.value).collect::<Int64Array>(),
+        ));
     }
     fields.push(Field::new("rows", DataType::Int64, false));
     columns.push(Arc::new(Int64Array::from_iter_values(
@@ -525,7 +631,7 @@ fn show(v: Value<'_>) -> String {
 }
 
 /// The day number of the first of a month.
-fn days_before_month(y: i64, m: u32) -> i64 {
+pub fn days_before_month(y: i64, m: u32) -> i64 {
     let (y, m) = if m <= 2 {
         (y - 1, i64::from(m) + 9)
     } else {

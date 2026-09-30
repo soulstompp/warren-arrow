@@ -352,6 +352,17 @@ pub fn day_of(micros: i64) -> i64 {
     micros.div_euclid(MICROS_PER_DAY)
 }
 
+/// The month (1 to 12), the year, or the weekday (1 for Monday to 7 for Sunday) of a day counted
+/// from 1970-01-01, which was a Thursday.
+pub fn part_of_day(part: &crate::layout::Part, day: i64) -> i64 {
+    use crate::layout::Part;
+    match part {
+        Part::Month(_) => i64::from(year_month(day).1),
+        Part::Year(_) => year_month(day).0,
+        Part::Weekday(_) => (day + 3).rem_euclid(7) + 1,
+    }
+}
+
 /// The longitude and latitude of a WKB point, in degrees, or why the bytes are not a place: a
 /// two-dimensional point of finite coordinates, longitude within -180 to 180 and latitude within
 /// -90 to 90.

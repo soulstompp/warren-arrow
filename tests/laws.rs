@@ -270,6 +270,7 @@ fn every_row_groups_bounds_hold_its_rows_key_values() {
         &s,
         &Options {
             max_row_group_rows: Some(4),
+            ..Options::default()
         },
     );
     let mut groups = 0;
@@ -309,6 +310,7 @@ fn row_groups_follow_one_another_along_the_leading_level() {
         &s,
         &Options {
             max_row_group_rows: Some(4),
+            ..Options::default()
         },
     );
     let (mut pairs, mut rising) = (0, 0);
@@ -391,6 +393,7 @@ fn rows_come_in_the_keys_order_within_each_piece() {
         &s,
         &Options {
             max_row_group_rows: Some(4),
+            ..Options::default()
         },
     );
     for f in piece_files(&w) {
@@ -403,8 +406,15 @@ fn rows_come_in_the_keys_order_within_each_piece() {
             .collect();
         assert_eq!(
             names,
-            ["buy_id", "set_num", "root_id", "placed_at", "qty"],
-            "a month is never written"
+            [
+                "buy_id",
+                "set_num",
+                "root_id",
+                "placed_at",
+                "qty",
+                "placed_at_month"
+            ],
+            "the key's month is written after the layout's own columns"
         );
         let key: Vec<(i64, String, u32, i64)> = ints(&b, "root_id")
             .into_iter()
@@ -460,12 +470,14 @@ fn the_files_are_the_same_bytes_whatever_order_the_rows_came_in() {
         &s,
         &Options {
             max_row_group_rows: Some(4),
+            ..Options::default()
         },
     );
     let (b, wb) = written(
         &t,
         &Options {
             max_row_group_rows: Some(4),
+            ..Options::default()
         },
     );
     let (fa, fb) = (all_bytes(a.path()), all_bytes(b.path()));
