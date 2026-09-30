@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Kenneth Allen Flegal
+// SPDX-License-Identifier: Apache-2.0
+
 //! What a written table must hold: the rows it was given, each piece's range, each row group's
 //! bounds, the key's order, and the same bytes whatever order the rows arrived in.
 

@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Kenneth Allen Flegal
+// SPDX-License-Identifier: Apache-2.0
+
 //! The geo cell of a point: a latitude band and a longitude sector, numbered
 //! `band * sectors + sector`. Longitude is read round the circle, so 180 and -180 are one meridian
 //! and a band's sectors run all the way round. Latitude runs from -90 to 90 and does not wrap; a

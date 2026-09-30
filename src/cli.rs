@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Kenneth Allen Flegal
+// SPDX-License-Identifier: Apache-2.0
+
 //! The command line's pieces a binary built on this crate shares: a written table's arguments, a
 //! question's conditions and how they are read, and the layout and part a command names.
 

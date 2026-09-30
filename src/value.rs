@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Kenneth Allen Flegal
+// SPDX-License-Identifier: Apache-2.0
+
 //! A column read by value, whatever Arrow type the source holds it in, and written in the type the
 //! layout gives it. A value that does not fit the layout's type exactly is refused, never rounded.
 

@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Kenneth Allen Flegal
+// SPDX-License-Identifier: Apache-2.0
+
 //! The certificate: how many rows a table holds, and two sums of a hash of each row, counted with
 //! multiplicity. Two tables holding the same rows, in any order, have the same certificate; a row
 //! dropped, added or changed moves it.

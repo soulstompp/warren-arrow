@@ -22,3 +22,13 @@ jobs:
         run: |
           cargo clippy --locked --all-targets -- -D warnings
           cargo clippy --locked --all-targets --features geo -- -D warnings
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - name: The oldest Rust the crate builds with
+        run: |
+          cargo check --locked --all-targets
+          cargo check --locked --all-targets --features geo

@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Kenneth Allen Flegal
+// SPDX-License-Identifier: Apache-2.0
+
 //! A month or a weekday as a level: written as a column of its own with a row group per value, as a
 //! piece per value, or stored under a name of its own; and what a reader keeps for a condition on it.
 

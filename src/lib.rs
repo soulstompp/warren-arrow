@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Kenneth Allen Flegal
+// SPDX-License-Identifier: Apache-2.0
+
 //! A warren in Parquet. Each table of a layout file is written as pieces of rows in its key's
 //! order, and a certificate beside them shows that the rows written are the rows read.
 

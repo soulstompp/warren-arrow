@@ -1,10 +1,16 @@
 [package]
 name = "warren-arrow"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
-description = "A warren in Parquet: each table of a layout file written as pieces of rows in key order, with the proof that the same rows were written"
+rust-version = "1.88"
+authors = ["Kenneth Allen Flegal"]
+description = "Write a layout's tables to Parquet in key order, each certified against its source, and count what a reader keeps from the metadata alone"
 license = "Apache-2.0"
-publish = false
+repository = "https://github.com/soulstompp/warren-arrow"
+readme = "README.md"
+include = ["src/**", "tests/**", "Cargo.toml", "Cargo.lock", "README.md", "LAYOUT.md", "CHANGELOG.md", "LICENSE", "NOTICE"]
+keywords = ["parquet", "arrow", "layout", "partitioning", "certificate"]
+categories = ["encoding", "database", "command-line-utilities"]
 
 [[bin]]
 name = "warren-arrow"

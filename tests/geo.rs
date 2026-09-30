@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Kenneth Allen Flegal
+// SPDX-License-Identifier: Apache-2.0
+
 //! The geo cell as a key level: it wraps round the antimeridian, meets at the poles and covers the
 //! globe once; rows are written in cell order; and each row group's box holds its points, crossing
 //! the antimeridian where that is the shorter way round.

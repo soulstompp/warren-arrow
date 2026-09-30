@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Kenneth Allen Flegal
+// SPDX-License-Identifier: Apache-2.0
+
 //! Reading a written table back: what a reader keeps for a condition, from the files' metadata
 //! alone; the rows that condition keeps, held against what was kept; the rows a reader keeps,
 //! read; how tightly each row group holds a phase; the runs of a phase; and each

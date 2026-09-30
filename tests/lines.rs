@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Kenneth Allen Flegal
+// SPDX-License-Identifier: Apache-2.0
+
 //! What a reader keeps for a set of values, whole numbers or texts, on a small lego world's lines:
 //! a row group per inventory kept for exactly the inventories asked, texts kept by their bytes, and
 //! reading what is kept reading only the kept row groups.

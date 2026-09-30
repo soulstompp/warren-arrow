@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Kenneth Allen Flegal
+// SPDX-License-Identifier: Apache-2.0
+
 //! Writing one table: its rows in the layout's types, in its key's order, cut into pieces, each
 //! piece a directory holding one Parquet file, and the certificate read back from the files.
 

@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Kenneth Allen Flegal
+// SPDX-License-Identifier: Apache-2.0
+
 //! The layout file, format 2: each table's columns, its primary key and its key. What Parquet has
 //! no place for is refused when the file is read, with the reason.
 
