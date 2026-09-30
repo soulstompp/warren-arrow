@@ -341,7 +341,8 @@ fn part(table: &Table, batch: &RecordBatch, p: &Part) -> ArrayRef {
 /// The rows of each piece, in key order, and the row holding each piece's least value after the
 /// first. A piece starts at every `every`th row in the range
 /// column's order, at a value greater than the one the piece before it starts at, so a value is
-/// never split across two pieces and no piece is empty. With no partitions, one piece.
+/// never split across two pieces and no piece is empty. With no partitions, one piece. A table with
+/// no rows is one piece with none.
 fn cut(
     table: &Table,
     batch: &RecordBatch,
@@ -349,10 +350,7 @@ fn cut(
 ) -> Result<(Vec<Vec<u32>>, Vec<u32>), Error> {
     let n = batch.num_rows();
     if n == 0 {
-        return Err(Error::Refused(format!(
-            "{}: the source holds no rows",
-            table.name
-        )));
+        return Ok((vec![Vec::new()], Vec::new()));
     }
     let Some(p) = &table.partitions else {
         return Ok((vec![order.to_vec()], Vec::new()));

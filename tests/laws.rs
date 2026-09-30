@@ -723,3 +723,15 @@ fn a_point_or_its_cell_is_refused_when_built_without_the_geo_feature() {
     let cell_only = places.replace(r#""type": "geography""#, r#""type": "bigint""#);
     assert!(refused_layout(&cell_only).contains("built without the geo feature"));
 }
+
+#[test]
+fn a_table_with_no_rows_is_one_piece_holding_none() {
+    let s = rows(&source(10), &[]);
+    let (_dir, w) = written(&s, &Options::default());
+    assert_eq!(w.pieces.len(), 1);
+    assert_eq!(
+        (w.pieces[0].rows, w.written.rows, w.source),
+        (0, 0, w.written)
+    );
+    assert_eq!(read(&piece_files(&w)[0]).num_rows(), 0);
+}
