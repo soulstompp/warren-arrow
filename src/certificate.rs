@@ -79,5 +79,10 @@ fn encode(v: Value<'_>, buf: &mut Vec<u8>) {
             buf.extend_from_slice(&d.to_be_bytes());
         }
         Value::Bool(b) => buf.extend_from_slice(&[5, u8::from(b)]),
+        Value::Wkb(b) => {
+            buf.push(6);
+            buf.extend_from_slice(&(b.len() as u64).to_be_bytes());
+            buf.extend_from_slice(b);
+        }
     }
 }

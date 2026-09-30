@@ -487,3 +487,15 @@ fn a_source_the_layout_cannot_hold_exactly_is_refused() {
         other => panic!("written over: {other:?}"),
     }
 }
+
+#[cfg(not(feature = "geo"))]
+#[test]
+fn a_point_or_its_cell_is_refused_when_built_without_the_geo_feature() {
+    let places = r#"{"format": 2, "name": "places", "tables": [{"name": "place",
+      "columns": [{"name": "place_id", "type": "bigint", "null": false},
+                  {"name": "place", "type": "geography", "null": false}],
+      "keys": [{"name": "k", "levels": [{"cell": "place", "band": 10, "sector": 10}]}]}]}"#;
+    assert!(refused_layout(places).contains("built without the geo feature"));
+    let cell_only = places.replace(r#""type": "geography""#, r#""type": "bigint""#);
+    assert!(refused_layout(&cell_only).contains("built without the geo feature"));
+}

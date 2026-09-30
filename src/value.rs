@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, AsArray, BooleanBuilder, Date32Builder, Int16Builder, Int32Builder,
-    Int64Builder, StringBuilder, TimestampMicrosecondBuilder,
+    Array, ArrayRef, AsArray, BooleanBuilder, Date32Builder, BinaryBuilder, Int16Builder,
+    Int32Builder, Int64Builder, StringBuilder, TimestampMicrosecondBuilder,
 };
 use arrow::datatypes::{
     DataType, Date32Type, Date64Type, Field, Int8Type, Int16Type, Int32Type, Int64Type, TimeUnit,
@@ -23,7 +23,7 @@ const MICROS_PER_DAY: i64 = 86_400_000_000;
 const MILLIS_PER_DAY: i64 = 86_400_000;
 
 /// One value of a row, as the layout's types see it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Value<'a> {
     Null,
     Int(i128),
@@ -33,6 +33,8 @@ pub enum Value<'a> {
     /// Days since 1970-01-01.
     Date(i32),
     Bool(bool),
+    /// A point as WKB, byte for byte.
+    Wkb(&'a [u8]),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -52,6 +54,9 @@ enum Kind {
     Date32,
     Date64,
     Bool,
+    Binary,
+    LargeBinary,
+    BinaryView,
 }
 
 /// A source column, read one value at a time as the layout column it is written to.
@@ -94,6 +99,9 @@ impl<'a> Reader<'a> {
             (Type::Date, DataType::Date32) => Kind::Date32,
             (Type::Date, DataType::Date64) => Kind::Date64,
             (Type::Boolean, DataType::Boolean) => Kind::Bool,
+            (Type::Geography, DataType::Binary) => Kind::Binary,
+            (Type::Geography, DataType::LargeBinary) => Kind::LargeBinary,
+            (Type::Geography, DataType::BinaryView) => Kind::BinaryView,
             (ty, dt) => {
                 return Err(refuse(format!(
                     "the source holds {dt}, which is not a {}{}",
@@ -136,6 +144,9 @@ impl<'a> Reader<'a> {
                 )
             }
             Kind::Bool => Value::Bool(a.as_boolean().value(row)),
+            Kind::Binary => Value::Wkb(a.as_binary::<i32>().value(row)),
+            Kind::LargeBinary => Value::Wkb(a.as_binary::<i64>().value(row)),
+            Kind::BinaryView => Value::Wkb(a.as_binary_view().value(row)),
         })
     }
 
@@ -192,8 +203,14 @@ pub fn field(col: &Column) -> Field {
         Type::Instant => DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into())),
         Type::Date => DataType::Date32,
         Type::Boolean => DataType::Boolean,
+        Type::Geography => DataType::Binary,
     };
-    Field::new(&col.name, dt, col.nullable)
+    let field = Field::new(&col.name, dt, col.nullable);
+    #[cfg(feature = "geo")]
+    if col.ty == Type::Geography {
+        return crate::geo::geography_field(field);
+    }
+    field
 }
 
 /// The source column written in the layout column's type, or the first value that does not fit.
@@ -283,6 +300,21 @@ pub fn convert(table: &str, col: &Column, source: &Reader<'_>, rows: usize) -> R
             }
             Arc::new(b.finish())
         }
+        Type::Geography => {
+            let mut b = BinaryBuilder::with_capacity(rows, rows * 21);
+            for row in 0..rows {
+                match source.get(row)? {
+                    Value::Null if col.nullable => b.append_null(),
+                    Value::Null => return Err(not_null(row)),
+                    Value::Wkb(v) => {
+                        point(v).map_err(|why| refuse(row, why))?;
+                        b.append_value(v);
+                    }
+                    _ => unreachable!("checked by the reader"),
+                }
+            }
+            Arc::new(b.finish())
+        }
     })
 }
 
@@ -303,6 +335,45 @@ pub fn year_month(days: i64) -> (i64, u32) {
 /// The day an instant falls on, in UTC.
 pub fn day_of(micros: i64) -> i64 {
     micros.div_euclid(MICROS_PER_DAY)
+}
+
+/// The longitude and latitude of a WKB point, in degrees, or why the bytes are not a place: a
+/// two-dimensional point of finite coordinates, longitude within -180 to 180 and latitude within
+/// -90 to 90.
+pub fn point(wkb: &[u8]) -> Result<(f64, f64), String> {
+    if wkb.len() != 21 {
+        return Err(format!(
+            "{} bytes, and a two-dimensional WKB point is 21",
+            wkb.len()
+        ));
+    }
+    let little = match wkb[0] {
+        0 => false,
+        1 => true,
+        b => return Err(format!("a WKB byte order of {b}, which is neither 0 nor 1")),
+    };
+    let word = |b: &[u8]| {
+        let a: [u8; 4] = b.try_into().expect("four bytes");
+        if little { u32::from_le_bytes(a) } else { u32::from_be_bytes(a) }
+    };
+    let float = |b: &[u8]| {
+        let a: [u8; 8] = b.try_into().expect("eight bytes");
+        if little { f64::from_le_bytes(a) } else { f64::from_be_bytes(a) }
+    };
+    let kind = word(&wkb[1..5]);
+    if kind != 1 {
+        return Err(format!("WKB of type {kind}, and a place is a point (type 1)"));
+    }
+    let (lon, lat) = (float(&wkb[5..13]), float(&wkb[13..21]));
+    if !(lon.is_finite() && lat.is_finite()) {
+        return Err(format!("({lon}, {lat}) is not a place: its coordinates must be finite"));
+    }
+    if !(-180.0..=180.0).contains(&lon) || !(-90.0..=90.0).contains(&lat) {
+        return Err(format!(
+            "({lon}, {lat}) is not a place: longitude runs from -180 to 180 and latitude from -90 to 90"
+        ));
+    }
+    Ok((lon, lat))
 }
 
 #[cfg(test)]

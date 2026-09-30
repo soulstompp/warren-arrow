@@ -21,7 +21,7 @@ use parquet::file::properties::{EnabledStatistics, WriterProperties};
 
 use crate::Error;
 use crate::certificate::Certificate;
-use crate::layout::{Layout, Level, Part, Table, Type};
+use crate::layout::{Cell, Layout, Level, Part, Table, Type};
 use crate::value::{self, Reader, Value};
 
 /// The file each piece's directory holds.
@@ -92,6 +92,10 @@ pub fn write_table(
 
     let rows = source.num_rows();
     let batch = typed(table, source)?;
+    #[cfg(feature = "geo")]
+    if table.columns.iter().any(|c| c.ty == Type::Geography) {
+        crate::geo::install()?;
+    }
     let source_certificate = Certificate::of(table, source)?;
     unique_primary_key(table, &batch)?;
     let order = key_order(table, &batch)?;
@@ -251,6 +255,7 @@ fn order_arrays(table: &Table, batch: &RecordBatch) -> Result<Vec<ArrayRef>, Err
                     used.insert(c);
                 }
                 Level::Part(p) => arrays.push(part(table, batch, p)),
+                Level::Cell(c) => arrays.push(cell(table, batch, c)?),
             }
         }
     }
@@ -349,7 +354,7 @@ fn properties(table: &Table, schema: &SchemaRef, opts: &Options) -> WriterProper
             for l in &k.levels {
                 match l {
                     Level::Column(c) => sorting.push(index(c)),
-                    Level::Part(_) => break,
+                    Level::Part(_) | Level::Cell(_) => break,
                 }
             }
         }
@@ -453,6 +458,10 @@ fn show(v: Value<'_>) -> String {
             format!("{y:04}-{m:02}-{day:02}")
         }
         Value::Bool(b) => b.to_string(),
+        Value::Wkb(b) => match value::point(b) {
+            Ok((lon, lat)) => format!("POINT ({lon} {lat})"),
+            Err(_) => format!("{} bytes of WKB", b.len()),
+        },
     }
 }
 
@@ -464,4 +473,32 @@ fn days_before_month(y: i64, m: u32) -> i64 {
     let doy = (153 * m + 2) / 5;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
+}
+
+/// The geo cell of each row's point.
+#[cfg(feature = "geo")]
+fn cell(table: &Table, batch: &RecordBatch, c: &Cell) -> Result<ArrayRef, Error> {
+    let grid = crate::geo::Grid::new(c.band, c.sector)
+        .map_err(|e| Error::Refused(format!("{}: {e}", table.name)))?;
+    let points = batch.column_by_name(&c.cell).expect("typed by the layout");
+    let wkb = points.as_binary::<i32>();
+    let mut out = Vec::with_capacity(batch.num_rows());
+    for i in 0..batch.num_rows() {
+        if points.is_null(i) {
+            out.push(None);
+            continue;
+        }
+        let at = |e: String| Error::Refused(format!("{} at row {i}: {e}", table.name));
+        let (lon, lat) = value::point(wkb.value(i)).map_err(at)?;
+        out.push(Some(grid.cell(lon, lat).map_err(at)?));
+    }
+    Ok(Arc::new(Int64Array::from(out)))
+}
+
+#[cfg(not(feature = "geo"))]
+fn cell(table: &Table, _: &RecordBatch, _: &Cell) -> Result<ArrayRef, Error> {
+    Err(Error::Refused(format!(
+        "{}: a cell level is read only with the geo feature, and this was built without the geo feature",
+        table.name
+    )))
 }

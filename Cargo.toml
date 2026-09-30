@@ -17,6 +17,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 sha2 = "0.10"
+parquet-geospatial = { version = "58", optional = true }
+
+[features]
+# A point held as a GEOGRAPHY column, and its geo cell as a key level.
+geo = ["parquet/geospatial", "dep:parquet-geospatial"]
 
 [dev-dependencies]
 tempfile = "3"

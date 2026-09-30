@@ -70,6 +70,9 @@ pub enum Type {
     Instant,
     Date,
     Boolean,
+    /// A point on the globe, longitude then latitude in degrees, held as WKB. Read only with the
+    /// geo feature.
+    Geography,
 }
 
 impl Type {
@@ -84,16 +87,30 @@ impl Type {
             Type::Instant => "instant",
             Type::Date => "date",
             Type::Boolean => "boolean",
+            Type::Geography => "geography",
         }
     }
 }
 
-/// A level of a key: a column, or the month or year of one.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+/// A level of a key: a column, the month or year of one, or the geo cell of a point.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(untagged)]
 pub enum Level {
     Column(String),
     Part(Part),
+    Cell(Cell),
+}
+
+/// The geo cell of a row's point, on a grid of `band`-degree latitude bands and `sector`-degree
+/// longitude sectors. It orders the rows and is never written as a column. Read only with the geo
+/// feature.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Cell {
+    /// The geography column the point is read from.
+    pub cell: String,
+    pub band: f64,
+    pub sector: f64,
 }
 
 /// The month (1 to 12) or the year of an instant in UTC, or of a date. It orders the rows and is
@@ -106,10 +123,11 @@ pub enum Part {
 }
 
 impl Level {
-    /// The column the level is read from.
-    pub fn column(&self) -> &str {
+    /// The columns the level is read from.
+    pub fn columns(&self) -> Vec<&str> {
         match self {
-            Level::Column(c) | Level::Part(Part::Month(c)) | Level::Part(Part::Year(c)) => c,
+            Level::Column(c) | Level::Part(Part::Month(c)) | Level::Part(Part::Year(c)) => vec![c],
+            Level::Cell(c) => vec![&c.cell],
         }
     }
 }
@@ -219,6 +237,13 @@ impl Table {
                 }
                 _ => {}
             }
+            #[cfg(not(feature = "geo"))]
+            if c.ty == Type::Geography {
+                return Err(at(format!(
+                    "{} is a geography, which is read only with the geo feature, and this was built without the geo feature",
+                    c.name
+                )));
+            }
         }
 
         if !self.decides.is_empty() {
@@ -253,6 +278,11 @@ impl Table {
                     "the primary key's {c} may hold null; the layout must say \"null\": false"
                 )));
             }
+            if col.ty == Type::Geography {
+                return Err(at(format!(
+                    "the primary key's {c} is a geography, and two spellings of one point are not one value"
+                )));
+            }
         }
 
         if let Some(k) = self.key() {
@@ -260,20 +290,36 @@ impl Table {
             if k.levels.is_empty() {
                 return Err(at(format!("key {} has no level", k.name)));
             }
-            let mut parts = HashSet::new();
+            let mut levels: Vec<&Level> = Vec::new();
             for l in &k.levels {
-                let col = self
-                    .column(l.column())
-                    .ok_or_else(|| at(format!("key {}: {} is not a column", k.name, l.column())))?;
-                if matches!(l, Level::Part(_)) && !matches!(col.ty, Type::Instant | Type::Date) {
-                    return Err(at(format!(
-                        "key {}: {} is neither an instant nor a date",
-                        k.name, col.name
-                    )));
+                let mut cols = Vec::new();
+                for c in l.columns() {
+                    cols.push(self.column(c).ok_or_else(|| {
+                        at(format!("key {}: {c} is not a column", k.name))
+                    })?);
                 }
-                if !parts.insert(l.clone()) {
+                match l {
+                    Level::Column(_) if cols[0].ty == Type::Geography => {
+                        return Err(at(format!(
+                            "key {}: {} is a geography, which orders rows only through its cell",
+                            k.name, cols[0].name
+                        )));
+                    }
+                    Level::Column(_) => {}
+                    Level::Part(_) => {
+                        if !matches!(cols[0].ty, Type::Instant | Type::Date) {
+                            return Err(at(format!(
+                                "key {}: {} is neither an instant nor a date",
+                                k.name, cols[0].name
+                            )));
+                        }
+                    }
+                    Level::Cell(cell) => self.cell_ok(&k.name, cell, &cols)?,
+                }
+                if levels.contains(&l) {
                     return Err(at(format!("key {}: a level is named twice", k.name)));
                 }
+                levels.push(l);
             }
             for c in &k.covers {
                 if self.column(c).is_none() {
@@ -286,6 +332,12 @@ impl Table {
             let col = self.column(&p.range).ok_or_else(|| {
                 at(format!("the partitions range over {}, which is not a column", p.range))
             })?;
+            if col.ty == Type::Geography {
+                return Err(at(format!(
+                    "the partitions range over {}, a geography, which has no order of its own",
+                    p.range
+                )));
+            }
             if col.nullable {
                 return Err(at(format!(
                     "the partitions range over {}, which may hold null, and a null has no place among the ranges; the layout must say \"null\": false",
@@ -314,5 +366,30 @@ fn name_ok(what: &str, name: &str) -> Result<(), Error> {
         refuse(format!(
             "{what} is named {name:?}: a name is lower-case letters, digits and underscores, starts with a letter or an underscore, and has at most 63 characters"
         ))
+    }
+}
+
+impl Table {
+    /// Whether a cell level can be read: a geography column, on a grid that divides the globe evenly.
+    #[cfg(feature = "geo")]
+    fn cell_ok(&self, key: &str, cell: &Cell, cols: &[&Column]) -> Result<(), Error> {
+        let at = |what: String| Error::Refused(format!("{}: key {key}: {what}", self.name));
+        if cols[0].ty != Type::Geography {
+            return Err(at(format!(
+                "a cell is read from a geography column, and {} is a {}",
+                cols[0].name,
+                cols[0].ty.name()
+            )));
+        }
+        crate::geo::Grid::new(cell.band, cell.sector).map_err(at)?;
+        Ok(())
+    }
+
+    #[cfg(not(feature = "geo"))]
+    fn cell_ok(&self, key: &str, _: &Cell, _: &[&Column]) -> Result<(), Error> {
+        Err(Error::Refused(format!(
+            "{}: key {key}: a cell level is read only with the geo feature, and this was built without the geo feature",
+            self.name
+        )))
     }
 }
