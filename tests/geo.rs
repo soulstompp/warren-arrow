@@ -7,7 +7,9 @@
 use std::fs::File;
 use std::sync::Arc;
 
-use arrow::array::{Array, AsArray, BinaryArray, Float64Array, Int64Array, RecordBatch, UInt32Array};
+use arrow::array::{
+    Array, AsArray, BinaryArray, Float64Array, Int64Array, RecordBatch, UInt32Array,
+};
 use arrow::compute::take;
 use arrow::datatypes::{DataType, Field, Schema};
 use parquet::file::reader::{FileReader, SerializedFileReader};
@@ -82,7 +84,11 @@ fn table(pts: &[(f64, f64)]) -> RecordBatch {
         Field::new("place_id", DataType::Int64, false),
         Field::new("place", DataType::Binary, false),
     ]);
-    let wkbs: Vec<Vec<u8>> = pts.iter().enumerate().map(|(i, p)| wkb(p.0, p.1, i % 3 != 0)).collect();
+    let wkbs: Vec<Vec<u8>> = pts
+        .iter()
+        .enumerate()
+        .map(|(i, p)| wkb(p.0, p.1, i % 3 != 0))
+        .collect();
     let batch = RecordBatch::try_new(
         Arc::new(schema),
         vec![
@@ -92,7 +98,11 @@ fn table(pts: &[(f64, f64)]) -> RecordBatch {
     )
     .unwrap();
     let idx = UInt32Array::from(order);
-    let columns = batch.columns().iter().map(|c| take(c.as_ref(), &idx, None).unwrap()).collect();
+    let columns = batch
+        .columns()
+        .iter()
+        .map(|c| take(c.as_ref(), &idx, None).unwrap())
+        .collect();
     RecordBatch::try_new(batch.schema(), columns).unwrap()
 }
 
@@ -100,11 +110,23 @@ fn table(pts: &[(f64, f64)]) -> RecordBatch {
 fn a_longitude_and_the_same_longitude_a_turn_away_share_a_cell() {
     for (band, sector) in [(10.0, 10.0), (30.0, 45.0), (1.0, 1.0), (0.5, 0.25)] {
         let g = Grid::new(band, sector).unwrap();
-        assert_eq!(g.sector_of(180.0), g.sector_of(-180.0), "180 and -180 are one meridian");
+        assert_eq!(
+            g.sector_of(180.0),
+            g.sector_of(-180.0),
+            "180 and -180 are one meridian"
+        );
         for (lon, lat) in points() {
             let c = g.cell(lon, lat).unwrap();
-            assert_eq!(g.cell(lon + 360.0, lat).unwrap(), c, "({lon}, {lat}) and a turn east");
-            assert_eq!(g.cell(lon - 360.0, lat).unwrap(), c, "({lon}, {lat}) and a turn west");
+            assert_eq!(
+                g.cell(lon + 360.0, lat).unwrap(),
+                c,
+                "({lon}, {lat}) and a turn east"
+            );
+            assert_eq!(
+                g.cell(lon - 360.0, lat).unwrap(),
+                c,
+                "({lon}, {lat}) and a turn west"
+            );
         }
     }
 }
@@ -126,26 +148,42 @@ fn every_point_lies_in_exactly_one_cell_and_the_cells_cover_the_globe() {
     let pts: Vec<(f64, f64)> = points()
         .into_iter()
         .chain((-90..=90).step_by(15).flat_map(|lat| {
-            (-180..=180).step_by(15).map(move |lon| (f64::from(lon) + 7.5, f64::from(lat)))
+            (-180..=180)
+                .step_by(15)
+                .map(move |lon| (f64::from(lon) + 7.5, f64::from(lat)))
         }))
         .collect();
     for (lon, lat) in pts {
         let c = g.cell(lon, lat).unwrap();
         assert!((0..cells).contains(&c), "({lon}, {lat}) is given cell {c}");
-        assert!(inside(&g, c, lon, lat), "({lon}, {lat}) lies outside its cell {c}");
+        assert!(
+            inside(&g, c, lon, lat),
+            "({lon}, {lat}) lies outside its cell {c}"
+        );
         let holding = (0..cells).filter(|k| inside(&g, *k, lon, lat)).count();
         assert_eq!(holding, 1, "({lon}, {lat}) lies in {holding} cells");
         reached[c as usize] = true;
     }
-    assert!(reached.iter().all(|r| *r), "some cell holds none of the points");
+    assert!(
+        reached.iter().all(|r| *r),
+        "some cell holds none of the points"
+    );
 }
 
 #[test]
 fn a_point_at_a_pole_lies_in_the_end_band_whatever_its_longitude() {
     let g = grid();
     for lon in [-540.0, -180.0, -123.4, 0.0, 45.0, 179.999, 180.0, 540.0] {
-        assert_eq!(g.cell(lon, 90.0).unwrap() / g.sectors(), g.bands() - 1, "north pole at {lon}");
-        assert_eq!(g.cell(lon, -90.0).unwrap() / g.sectors(), 0, "south pole at {lon}");
+        assert_eq!(
+            g.cell(lon, 90.0).unwrap() / g.sectors(),
+            g.bands() - 1,
+            "north pole at {lon}"
+        );
+        assert_eq!(
+            g.cell(lon, -90.0).unwrap() / g.sectors(),
+            0,
+            "south pole at {lon}"
+        );
     }
     assert!(g.cell(0.0, 90.001).is_err() && g.cell(f64::NAN, 0.0).is_err());
 }
@@ -163,14 +201,19 @@ fn groups(w: &Written) -> Vec<Group> {
         let file = w.dir.join(&p.name).join(ROWS_FILE);
         let rows = warren_arrow::read_source(&file).unwrap();
         let col = rows.column_by_name("place").unwrap();
-        let pts: Vec<(f64, f64)> = (0..col.len()).map(|i| point(col.as_binary::<i32>().value(i)).unwrap()).collect();
+        let pts: Vec<(f64, f64)> = (0..col.len())
+            .map(|i| point(col.as_binary::<i32>().value(i)).unwrap())
+            .collect();
         let reader = SerializedFileReader::new(File::open(&file).unwrap()).unwrap();
         let md = reader.metadata();
         let mut at = 0usize;
         for i in 0..md.num_row_groups() {
             let rg = md.row_group(i);
             let n = rg.num_rows() as usize;
-            let bb = rg.column(1).geo_statistics().expect("a geography row group has a box");
+            let bb = rg
+                .column(1)
+                .geo_statistics()
+                .expect("a geography row group has a box");
             let bb = bb.bounding_box().expect("its box");
             out.push(Group {
                 x: (bb.get_xmin(), bb.get_xmax()),
@@ -186,7 +229,14 @@ fn groups(w: &Written) -> Vec<Group> {
 
 fn write(pts: &[(f64, f64)], opts: &Options) -> (tempfile::TempDir, Written) {
     let dir = tempfile::tempdir().unwrap();
-    let w = write_table(&Layout::parse(LAYOUT).unwrap(), "place", &table(pts), dir.path(), opts).unwrap();
+    let w = write_table(
+        &Layout::parse(LAYOUT).unwrap(),
+        "place",
+        &table(pts),
+        dir.path(),
+        opts,
+    )
+    .unwrap();
     assert_eq!(w.source, w.written);
     (dir, w)
 }
@@ -206,7 +256,11 @@ fn cells_within(g: &Grid, x: (f64, f64), y: (f64, f64)) -> impl Fn(i64) -> bool 
     let s = g.sectors();
     let width = 360.0 / s as f64;
     let from = (x.0 + 180.0).rem_euclid(360.0);
-    let span = if x.0 <= x.1 { x.1 - x.0 } else { x.1 + 360.0 - x.0 };
+    let span = if x.0 <= x.1 {
+        x.1 - x.0
+    } else {
+        x.1 + 360.0 - x.0
+    };
     let steps = ((from + span) / width).floor() as i64 - (from / width).floor() as i64;
     let first = g.sector_of(x.0);
     let all = steps >= s - 1;
@@ -219,41 +273,86 @@ fn cells_within(g: &Grid, x: (f64, f64), y: (f64, f64)) -> impl Fn(i64) -> bool 
 #[test]
 fn rows_are_written_in_cell_order_and_each_row_groups_box_holds_its_cells() {
     let g = grid();
-    let (_dir, w) = write(&points(), &Options { max_row_group_rows: Some(3) });
+    let (_dir, w) = write(
+        &points(),
+        &Options {
+            max_row_group_rows: Some(3),
+        },
+    );
     let gs = groups(&w);
-    let cells: Vec<i64> = gs.iter().flat_map(|x| x.points.iter().map(|p| g.cell(p.0, p.1).unwrap())).collect();
-    assert!(cells.windows(2).all(|p| p[0] <= p[1]), "rows are out of cell order");
+    let cells: Vec<i64> = gs
+        .iter()
+        .flat_map(|x| x.points.iter().map(|p| g.cell(p.0, p.1).unwrap()))
+        .collect();
+    assert!(
+        cells.windows(2).all(|p| p[0] <= p[1]),
+        "rows are out of cell order"
+    );
     let mut narrow = 0;
     for x in &gs {
         let lats = x.points.iter().map(|p| p.1);
         let lons: Vec<f64> = x.points.iter().map(|p| p.0).collect();
         let computed = arc(&lons).unwrap();
         assert_eq!(x.x, computed, "the box read back is not the box computed");
-        assert_eq!(x.y, (lats.clone().fold(f64::INFINITY, f64::min), lats.fold(f64::NEG_INFINITY, f64::max)));
+        assert_eq!(
+            x.y,
+            (
+                lats.clone().fold(f64::INFINITY, f64::min),
+                lats.fold(f64::NEG_INFINITY, f64::max)
+            )
+        );
         let within = cells_within(&g, x.x, x.y);
         for p in &x.points {
-            assert!(on_arc(x.x, p.0) && x.y.0 <= p.1 && p.1 <= x.y.1, "{p:?} lies outside its box");
+            assert!(
+                on_arc(x.x, p.0) && x.y.0 <= p.1 && p.1 <= x.y.1,
+                "{p:?} lies outside its box"
+            );
             let c = g.cell(p.0, p.1).unwrap();
-            assert!(within(c), "cell {c} of {p:?} lies outside its row group's box {:?} {:?}", x.x, x.y);
+            assert!(
+                within(c),
+                "cell {c} of {p:?} lies outside its row group's box {:?} {:?}",
+                x.x,
+                x.y
+            );
         }
         narrow += usize::from((0..g.bands() * g.sectors()).filter(|c| within(*c)).count() < 10);
     }
-    assert!(narrow > gs.len() / 2, "most row groups must reach only a few cells");
+    assert!(
+        narrow > gs.len() / 2,
+        "most row groups must reach only a few cells"
+    );
 }
 
 #[test]
 fn a_row_group_across_the_antimeridian_gets_one_narrow_box_that_holds_it() {
     assert_eq!(arc(&[179.9, -179.9, 179.95]), Some((179.9, -179.9)));
     assert_eq!(arc(&[180.0, -180.0]), Some((180.0, -180.0)));
-    assert_eq!(arc(&[-179.0, 0.0, 179.0]), Some((0.0, -179.0)), "181 degrees the long way is shorter than 358");
+    assert_eq!(
+        arc(&[-179.0, 0.0, 179.0]),
+        Some((0.0, -179.0)),
+        "181 degrees the long way is shorter than 358"
+    );
 
-    let seam = [(179.9, 45.0), (-179.9, 45.0), (179.95, 46.0), (-179.95, 44.0)];
+    let seam = [
+        (179.9, 45.0),
+        (-179.9, 45.0),
+        (179.95, 46.0),
+        (-179.95, 44.0),
+    ];
     let (_dir, w) = write(&seam, &Options::default());
     let gs = groups(&w);
     assert_eq!(gs.len(), 1);
     let x = &gs[0];
-    assert!(x.x.0 > x.x.1, "the box {:?} does not cross the antimeridian", x.x);
-    assert!(x.x.1 + 360.0 - x.x.0 < 1.0, "the box {:?} is not narrow", x.x);
+    assert!(
+        x.x.0 > x.x.1,
+        "the box {:?} does not cross the antimeridian",
+        x.x
+    );
+    assert!(
+        x.x.1 + 360.0 - x.x.0 < 1.0,
+        "the box {:?} is not narrow",
+        x.x
+    );
     for p in &x.points {
         assert!(on_arc(x.x, p.0), "{p:?} lies outside the box {:?}", x.x);
     }
@@ -262,11 +361,18 @@ fn a_row_group_across_the_antimeridian_gets_one_narrow_box_that_holds_it() {
 #[test]
 fn a_box_never_crosses_the_antimeridian_where_the_plain_range_is_shorter() {
     assert_eq!(arc(&[-10.0, 0.0, 10.0]), Some((-10.0, 10.0)));
-    assert_eq!(arc(&[-90.0, 90.0]), Some((-90.0, 90.0)), "a tie keeps the plain range");
+    assert_eq!(
+        arc(&[-90.0, 90.0]),
+        Some((-90.0, 90.0)),
+        "a tie keeps the plain range"
+    );
     assert_eq!(arc(&[-60.0, 0.0, 60.0, 100.0]), Some((-60.0, 100.0)));
     assert_eq!(arc(&[5.0]), Some((5.0, 5.0)));
 
-    let (_dir, w) = write(&[(-10.0, 1.0), (0.0, 2.0), (10.0, 3.0)], &Options::default());
+    let (_dir, w) = write(
+        &[(-10.0, 1.0), (0.0, 2.0), (10.0, 3.0)],
+        &Options::default(),
+    );
     let gs = groups(&w);
     assert_eq!(gs[0].x, (-10.0, 10.0));
 }
@@ -284,17 +390,41 @@ fn a_cell_or_a_geography_the_writer_cannot_read_is_refused() {
     };
     assert!(why(&with(r#""band": 10"#, r#""band": 7"#)).contains("whole numbers of pieces"));
     assert!(why(&with(r#""sector": 10"#, r#""sector": 0"#)).contains("whole numbers of pieces"));
-    assert!(why(&with(r#"{"cell": "place""#, r#"{"cell": "place_id""#)).contains("read from a geography column"));
-    assert!(why(&with(r#"[{"cell": "place", "band": 10, "sector": 10}]"#, r#"["place"]"#)).contains("only through its cell"));
-    assert!(why(&with(r#""primary_key": ["place_id"]"#, r#""primary_key": ["place"]"#)).contains("two spellings of one point"));
     assert!(
-        why(&with(r#""primary_key": ["place_id"],"#, r#""primary_key": ["place_id"], "partitions": {"range": "place", "every": 5},"#))
-            .contains("has no order of its own")
+        why(&with(r#"{"cell": "place""#, r#"{"cell": "place_id""#))
+            .contains("read from a geography column")
+    );
+    assert!(
+        why(&with(
+            r#"[{"cell": "place", "band": 10, "sector": 10}]"#,
+            r#"["place"]"#
+        ))
+        .contains("only through its cell")
+    );
+    assert!(
+        why(&with(
+            r#""primary_key": ["place_id"]"#,
+            r#""primary_key": ["place"]"#
+        ))
+        .contains("two spellings of one point")
+    );
+    assert!(
+        why(&with(
+            r#""primary_key": ["place_id"],"#,
+            r#""primary_key": ["place_id"], "partitions": {"range": "place", "every": 5},"#
+        ))
+        .contains("has no order of its own")
     );
 
     let refused = |batch: RecordBatch| {
         let dir = tempfile::tempdir().unwrap();
-        match write_table(&Layout::parse(LAYOUT).unwrap(), "place", &batch, dir.path(), &Options::default()) {
+        match write_table(
+            &Layout::parse(LAYOUT).unwrap(),
+            "place",
+            &batch,
+            dir.path(),
+            &Options::default(),
+        ) {
             Err(Error::Refused(w)) => w,
             other => panic!("written: {other:?}"),
         }
@@ -312,8 +442,15 @@ fn a_cell_or_a_geography_the_writer_cannot_read_is_refused() {
     };
     let far = BinaryArray::from_iter_values([wkb(1.0, 1.0, true), wkb(540.0, 1.0, true)]);
     assert!(refused(with_places(Arc::new(far), DataType::Binary)).contains("is not a place"));
-    let line = BinaryArray::from_iter_values([wkb(1.0, 1.0, true), b"\x01\x02\x00\x00\x00".to_vec()]);
-    assert!(refused(with_places(Arc::new(line), DataType::Binary)).contains("a two-dimensional WKB point is 21"));
+    let line =
+        BinaryArray::from_iter_values([wkb(1.0, 1.0, true), b"\x01\x02\x00\x00\x00".to_vec()]);
+    assert!(
+        refused(with_places(Arc::new(line), DataType::Binary))
+            .contains("a two-dimensional WKB point is 21")
+    );
     let floats = Float64Array::from(vec![1.0, 2.0]);
-    assert!(refused(with_places(Arc::new(floats), DataType::Float64)).contains("which is not a geography"));
+    assert!(
+        refused(with_places(Arc::new(floats), DataType::Float64))
+            .contains("which is not a geography")
+    );
 }

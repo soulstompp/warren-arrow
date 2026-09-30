@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, AsArray, BooleanBuilder, Date32Builder, BinaryBuilder, Int16Builder,
+    Array, ArrayRef, AsArray, BinaryBuilder, BooleanBuilder, Date32Builder, Int16Builder,
     Int32Builder, Int64Builder, StringBuilder, TimestampMicrosecondBuilder,
 };
 use arrow::datatypes::{
@@ -110,7 +110,11 @@ impl<'a> Reader<'a> {
                 )));
             }
         };
-        Ok(Reader { name: &col.name, array, kind })
+        Ok(Reader {
+            name: &col.name,
+            array,
+            kind,
+        })
     }
 
     /// The value at `row`.
@@ -214,12 +218,20 @@ pub fn field(col: &Column) -> Field {
 }
 
 /// The source column written in the layout column's type, or the first value that does not fit.
-pub fn convert(table: &str, col: &Column, source: &Reader<'_>, rows: usize) -> Result<ArrayRef, Error> {
+pub fn convert(
+    table: &str,
+    col: &Column,
+    source: &Reader<'_>,
+    rows: usize,
+) -> Result<ArrayRef, Error> {
     let refuse = |row: usize, why: String| {
         Error::Refused(format!("{table}.{} at row {row}: {why}", col.name))
     };
     let not_null = |row: usize| {
-        refuse(row, "a null, and the layout says the column holds none".to_string())
+        refuse(
+            row,
+            "a null, and the layout says the column holds none".to_string(),
+        )
     };
     macro_rules! ints {
         ($builder:ty, $t:ty) => {{
@@ -253,7 +265,10 @@ pub fn convert(table: &str, col: &Column, source: &Reader<'_>, rows: usize) -> R
                             if chars > n as usize {
                                 return Err(refuse(
                                     row,
-                                    format!("{chars} characters, and a {}({n}) holds at most {n}", col.ty.name()),
+                                    format!(
+                                        "{chars} characters, and a {}({n}) holds at most {n}",
+                                        col.ty.name()
+                                    ),
                                 ));
                             }
                         }
@@ -354,19 +369,31 @@ pub fn point(wkb: &[u8]) -> Result<(f64, f64), String> {
     };
     let word = |b: &[u8]| {
         let a: [u8; 4] = b.try_into().expect("four bytes");
-        if little { u32::from_le_bytes(a) } else { u32::from_be_bytes(a) }
+        if little {
+            u32::from_le_bytes(a)
+        } else {
+            u32::from_be_bytes(a)
+        }
     };
     let float = |b: &[u8]| {
         let a: [u8; 8] = b.try_into().expect("eight bytes");
-        if little { f64::from_le_bytes(a) } else { f64::from_be_bytes(a) }
+        if little {
+            f64::from_le_bytes(a)
+        } else {
+            f64::from_be_bytes(a)
+        }
     };
     let kind = word(&wkb[1..5]);
     if kind != 1 {
-        return Err(format!("WKB of type {kind}, and a place is a point (type 1)"));
+        return Err(format!(
+            "WKB of type {kind}, and a place is a point (type 1)"
+        ));
     }
     let (lon, lat) = (float(&wkb[5..13]), float(&wkb[13..21]));
     if !(lon.is_finite() && lat.is_finite()) {
-        return Err(format!("({lon}, {lat}) is not a place: its coordinates must be finite"));
+        return Err(format!(
+            "({lon}, {lat}) is not a place: its coordinates must be finite"
+        ));
     }
     if !(-180.0..=180.0).contains(&lon) || !(-90.0..=90.0).contains(&lat) {
         return Err(format!(

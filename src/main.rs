@@ -29,7 +29,11 @@ enum Command {
 }
 
 fn main() -> ExitCode {
-    let Command::Write { layout, tables, into } = Cli::parse().command;
+    let Command::Write {
+        layout,
+        tables,
+        into,
+    } = Cli::parse().command;
     let text = match std::fs::read_to_string(&layout) {
         Ok(t) => t,
         Err(e) => {
@@ -84,5 +88,9 @@ fn main() -> ExitCode {
             }
         }
     }
-    if refused == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+    if refused == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }

@@ -50,13 +50,24 @@ fn buy(layout: &Layout) -> &Table {
 /// quantities missing. The source's types differ from the layout's where they can be read exactly.
 fn source(n: u32) -> RecordBatch {
     let ids: Vec<u32> = (0..n).map(|i| (i * 37) % n + 1).collect();
-    let roots: Vec<i64> = ids.iter().map(|i| [3, 1, 1, 4, 1, 5, 9, 2, 6][(*i % 9) as usize]).collect();
-    let sets: Vec<String> = ids.iter().map(|i| format!("{}-{}", 10 + i % 4, i % 3)).collect();
+    let roots: Vec<i64> = ids
+        .iter()
+        .map(|i| [3, 1, 1, 4, 1, 5, 9, 2, 6][(*i % 9) as usize])
+        .collect();
+    let sets: Vec<String> = ids
+        .iter()
+        .map(|i| format!("{}-{}", 10 + i % 4, i % 3))
+        .collect();
     let placed: Vec<i64> = ids
         .iter()
-        .map(|i| (16_000 + i64::from(*i % 23) * 29) * MICROS_PER_DAY * 1_000 + i64::from(*i) * 1_000)
+        .map(|i| {
+            (16_000 + i64::from(*i % 23) * 29) * MICROS_PER_DAY * 1_000 + i64::from(*i) * 1_000
+        })
         .collect();
-    let qty: Vec<Option<i32>> = ids.iter().map(|i| (i % 5 != 0).then_some(*i as i32 % 7)).collect();
+    let qty: Vec<Option<i32>> = ids
+        .iter()
+        .map(|i| (i % 5 != 0).then_some(*i as i32 % 7))
+        .collect();
     let schema = Schema::new(vec![
         Field::new("buy_id", DataType::UInt32, false),
         Field::new("set_num", DataType::LargeUtf8, false),
@@ -72,7 +83,9 @@ fn source(n: u32) -> RecordBatch {
         Arc::new(schema),
         vec![
             Arc::new(UInt32Array::from(ids)),
-            Arc::new(LargeStringArray::from(sets.iter().map(String::as_str).collect::<Vec<_>>())),
+            Arc::new(LargeStringArray::from(
+                sets.iter().map(String::as_str).collect::<Vec<_>>(),
+            )),
             Arc::new(Int64Array::from(roots)),
             Arc::new(TimestampNanosecondArray::from(placed).with_timezone("UTC")),
             Arc::new(Int32Array::from(qty)),
@@ -115,13 +128,21 @@ fn read(path: &Path) -> RecordBatch {
 }
 
 fn piece_files(w: &warren_arrow::Written) -> Vec<PathBuf> {
-    w.pieces.iter().map(|p| w.dir.join(&p.name).join(ROWS_FILE)).collect()
+    w.pieces
+        .iter()
+        .map(|p| w.dir.join(&p.name).join(ROWS_FILE))
+        .collect()
 }
 
 fn ints(batch: &RecordBatch, name: &str) -> Vec<i64> {
     let a = batch.column_by_name(name).expect("the column");
     match a.data_type() {
-        DataType::Int32 => a.as_primitive::<Int32Type>().values().iter().map(|v| i64::from(*v)).collect(),
+        DataType::Int32 => a
+            .as_primitive::<Int32Type>()
+            .values()
+            .iter()
+            .map(|v| i64::from(*v))
+            .collect(),
         DataType::Int64 => a.as_primitive::<Int64Type>().values().to_vec(),
         dt => panic!("{name} is {dt}"),
     }
@@ -129,7 +150,9 @@ fn ints(batch: &RecordBatch, name: &str) -> Vec<i64> {
 
 fn texts(batch: &RecordBatch, name: &str) -> Vec<String> {
     let a = batch.column_by_name(name).expect("the column");
-    (0..a.len()).map(|i| a.as_string::<i32>().value(i).to_string()).collect()
+    (0..a.len())
+        .map(|i| a.as_string::<i32>().value(i).to_string())
+        .collect()
 }
 
 fn months(batch: &RecordBatch, name: &str) -> Vec<u32> {
@@ -163,10 +186,16 @@ fn the_certificate_moves_when_a_row_is_dropped_added_or_changed() {
     let whole = Certificate::of(buy(&l), &s).unwrap();
 
     let reversed: Vec<u32> = all.iter().rev().copied().collect();
-    assert_eq!(Certificate::of(buy(&l), &rows(&s, &reversed)).unwrap(), whole);
+    assert_eq!(
+        Certificate::of(buy(&l), &rows(&s, &reversed)).unwrap(),
+        whole
+    );
 
     let dropped: Vec<u32> = all[1..].to_vec();
-    assert_ne!(Certificate::of(buy(&l), &rows(&s, &dropped)).unwrap(), whole);
+    assert_ne!(
+        Certificate::of(buy(&l), &rows(&s, &dropped)).unwrap(),
+        whole
+    );
 
     let mut added = all.clone();
     added.push(3);
@@ -175,7 +204,10 @@ fn the_certificate_moves_when_a_row_is_dropped_added_or_changed() {
     // one row in place of another, so the count stays
     let mut replaced = all.clone();
     replaced[0] = 1;
-    assert_ne!(Certificate::of(buy(&l), &rows(&s, &replaced)).unwrap(), whole);
+    assert_ne!(
+        Certificate::of(buy(&l), &rows(&s, &replaced)).unwrap(),
+        whole
+    );
 
     // two copies of one row against two copies of another, the rest alike
     let two_of_a = [0u32, 0, 5];
@@ -195,7 +227,11 @@ enum Bounds {
 fn bounds(file: &Path, group: usize, column: usize) -> Bounds {
     let r = SerializedFileReader::new(File::open(file).unwrap()).unwrap();
     let md = r.metadata();
-    let stats = md.row_group(group).column(column).statistics().expect("statistics are written");
+    let stats = md
+        .row_group(group)
+        .column(column)
+        .statistics()
+        .expect("statistics are written");
     match stats {
         Statistics::Int32(s) => Bounds::Int(
             i64::from(*s.min_opt().expect("a least value")),
@@ -211,7 +247,10 @@ fn bounds(file: &Path, group: usize, column: usize) -> Bounds {
 }
 
 fn row_groups(file: &Path) -> usize {
-    SerializedFileReader::new(File::open(file).unwrap()).unwrap().metadata().num_row_groups()
+    SerializedFileReader::new(File::open(file).unwrap())
+        .unwrap()
+        .metadata()
+        .num_row_groups()
 }
 
 fn group_rows(file: &Path, group: usize) -> RecordBatch {
@@ -226,43 +265,75 @@ fn group_rows(file: &Path, group: usize) -> RecordBatch {
 #[test]
 fn every_row_groups_bounds_hold_its_rows_key_values() {
     let s = source(90);
-    let (_dir, w) = written_with(&layout_every(40), &s, &Options { max_row_group_rows: Some(4) });
+    let (_dir, w) = written_with(
+        &layout_every(40),
+        &s,
+        &Options {
+            max_row_group_rows: Some(4),
+        },
+    );
     let mut groups = 0;
     for f in piece_files(&w) {
         for g in 0..row_groups(&f) {
             groups += 1;
             let rows = group_rows(&f, g);
-            let Bounds::Int(lo, hi) = bounds(&f, g, 2) else { panic!("root_id is whole numbers") };
+            let Bounds::Int(lo, hi) = bounds(&f, g, 2) else {
+                panic!("root_id is whole numbers")
+            };
             for v in ints(&rows, "root_id") {
-                assert!(lo <= v && v <= hi, "root_id {v} outside [{lo}, {hi}] in {} group {g}", f.display());
+                assert!(
+                    lo <= v && v <= hi,
+                    "root_id {v} outside [{lo}, {hi}] in {} group {g}",
+                    f.display()
+                );
             }
-            let Bounds::Bytes(lo, hi) = bounds(&f, g, 1) else { panic!("set_num is text") };
+            let Bounds::Bytes(lo, hi) = bounds(&f, g, 1) else {
+                panic!("set_num is text")
+            };
             for v in texts(&rows, "set_num") {
                 assert!(lo.as_slice() <= v.as_bytes() && v.as_bytes() <= hi.as_slice());
             }
         }
     }
-    assert!(groups > w.pieces.len(), "some piece must hold more than one row group");
+    assert!(
+        groups > w.pieces.len(),
+        "some piece must hold more than one row group"
+    );
 }
 
 #[test]
 fn row_groups_follow_one_another_along_the_leading_level() {
     let s = source(90);
-    let (_dir, w) = written_with(&layout_every(40), &s, &Options { max_row_group_rows: Some(4) });
+    let (_dir, w) = written_with(
+        &layout_every(40),
+        &s,
+        &Options {
+            max_row_group_rows: Some(4),
+        },
+    );
     let (mut pairs, mut rising) = (0, 0);
     for f in piece_files(&w) {
         let n = row_groups(&f);
         for g in 1..n {
-            let (Bounds::Int(_, before), Bounds::Int(after, _)) = (bounds(&f, g - 1, 2), bounds(&f, g, 2)) else {
+            let (Bounds::Int(_, before), Bounds::Int(after, _)) =
+                (bounds(&f, g - 1, 2), bounds(&f, g, 2))
+            else {
                 panic!("root_id is whole numbers")
             };
-            assert!(before <= after, "{} group {g} starts at {after}, below {before}", f.display());
+            assert!(
+                before <= after,
+                "{} group {g} starts at {after}, below {before}",
+                f.display()
+            );
             pairs += 1;
             rising += usize::from(before < after);
         }
     }
     assert!(pairs > 0, "some piece must hold two row groups");
-    assert!(rising > 0, "the leading level must change between some two row groups");
+    assert!(
+        rising > 0,
+        "the leading level must change between some two row groups"
+    );
 }
 
 #[test]
@@ -271,8 +342,16 @@ fn each_piece_holds_its_own_range_and_the_pieces_cover_the_table() {
     let (_dir, w) = written(&s, &Options::default());
     assert!(w.pieces.len() > 2, "the law needs pieces to hold apart");
     let listed = read(&w.dir.join(PIECES_FILE));
-    let from = listed.column_by_name("from_root_id").unwrap().as_primitive::<Int32Type>().clone();
-    let to = listed.column_by_name("to_root_id").unwrap().as_primitive::<Int32Type>().clone();
+    let from = listed
+        .column_by_name("from_root_id")
+        .unwrap()
+        .as_primitive::<Int32Type>()
+        .clone();
+    let to = listed
+        .column_by_name("to_root_id")
+        .unwrap()
+        .as_primitive::<Int32Type>()
+        .clone();
     let mut total = 0;
     let mut seen_in: std::collections::HashMap<i64, usize> = Default::default();
     for (i, f) in piece_files(&w).iter().enumerate() {
@@ -281,10 +360,16 @@ fn each_piece_holds_its_own_range_and_the_pieces_cover_the_table() {
         total += roots.len();
         for v in roots {
             if from.is_valid(i) {
-                assert!(v >= i64::from(from.value(i)), "piece {i} holds {v}, below its bound");
+                assert!(
+                    v >= i64::from(from.value(i)),
+                    "piece {i} holds {v}, below its bound"
+                );
             }
             if to.is_valid(i) {
-                assert!(v < i64::from(to.value(i)), "piece {i} holds {v}, at or past the next piece's bound");
+                assert!(
+                    v < i64::from(to.value(i)),
+                    "piece {i} holds {v}, at or past the next piece's bound"
+                );
             }
             let piece = *seen_in.entry(v).or_insert(i);
             assert_eq!(piece, i, "root_id {v} is in piece {piece} and in piece {i}");
@@ -298,12 +383,29 @@ fn each_piece_holds_its_own_range_and_the_pieces_cover_the_table() {
 fn rows_come_in_the_keys_order_within_each_piece() {
     let s = source(90);
     let in_source: Vec<i64> = s.column(2).as_primitive::<Int64Type>().values().to_vec();
-    assert!(in_source.windows(2).any(|p| p[0] > p[1]), "the source must not already be in order");
-    let (_dir, w) = written(&s, &Options { max_row_group_rows: Some(4) });
+    assert!(
+        in_source.windows(2).any(|p| p[0] > p[1]),
+        "the source must not already be in order"
+    );
+    let (_dir, w) = written(
+        &s,
+        &Options {
+            max_row_group_rows: Some(4),
+        },
+    );
     for f in piece_files(&w) {
         let b = read(&f);
-        let names: Vec<String> = b.schema().fields().iter().map(|f| f.name().clone()).collect();
-        assert_eq!(names, ["buy_id", "set_num", "root_id", "placed_at", "qty"], "a month is never written");
+        let names: Vec<String> = b
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert_eq!(
+            names,
+            ["buy_id", "set_num", "root_id", "placed_at", "qty"],
+            "a month is never written"
+        );
         let key: Vec<(i64, String, u32, i64)> = ints(&b, "root_id")
             .into_iter()
             .zip(texts(&b, "set_num"))
@@ -311,7 +413,11 @@ fn rows_come_in_the_keys_order_within_each_piece() {
             .zip(ints(&b, "buy_id"))
             .map(|(((r, s), m), id)| (r, s, m, id))
             .collect();
-        assert!(key.windows(2).all(|p| p[0] <= p[1]), "{} is out of the key's order", f.display());
+        assert!(
+            key.windows(2).all(|p| p[0] <= p[1]),
+            "{} is out of the key's order",
+            f.display()
+        );
     }
 }
 
@@ -324,7 +430,10 @@ fn all_bytes(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
             if p.is_dir() {
                 stack.push(p);
             } else {
-                out.push((p.strip_prefix(dir).unwrap().to_path_buf(), std::fs::read(&p).unwrap()));
+                out.push((
+                    p.strip_prefix(dir).unwrap().to_path_buf(),
+                    std::fs::read(&p).unwrap(),
+                ));
             }
         }
     }
@@ -338,11 +447,27 @@ fn the_files_are_the_same_bytes_whatever_order_the_rows_came_in() {
     let shuffled: Vec<u32> = (0..90u32).map(|i| (i * 53 + 11) % 90).collect();
     let t = rows(&s, &shuffled);
     assert_ne!(
-        s.column(0).as_primitive::<arrow::datatypes::UInt32Type>().values().to_vec(),
-        t.column(0).as_primitive::<arrow::datatypes::UInt32Type>().values().to_vec()
+        s.column(0)
+            .as_primitive::<arrow::datatypes::UInt32Type>()
+            .values()
+            .to_vec(),
+        t.column(0)
+            .as_primitive::<arrow::datatypes::UInt32Type>()
+            .values()
+            .to_vec()
     );
-    let (a, wa) = written(&s, &Options { max_row_group_rows: Some(4) });
-    let (b, wb) = written(&t, &Options { max_row_group_rows: Some(4) });
+    let (a, wa) = written(
+        &s,
+        &Options {
+            max_row_group_rows: Some(4),
+        },
+    );
+    let (b, wb) = written(
+        &t,
+        &Options {
+            max_row_group_rows: Some(4),
+        },
+    );
     let (fa, fb) = (all_bytes(a.path()), all_bytes(b.path()));
     assert!(fa.len() > 3);
     assert_eq!(fa.len(), fb.len());
@@ -366,7 +491,14 @@ fn rows_the_key_leaves_tied_are_ordered_by_the_rest_of_the_row() {
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
     write_table(&l, "buy", &s, a.path(), &Options::default()).unwrap();
-    write_table(&l, "buy", &rows(&s, &shuffled), b.path(), &Options::default()).unwrap();
+    write_table(
+        &l,
+        "buy",
+        &rows(&s, &shuffled),
+        b.path(),
+        &Options::default(),
+    )
+    .unwrap();
     assert_eq!(all_bytes(a.path()), all_bytes(b.path()));
 }
 
@@ -387,20 +519,74 @@ fn a_layout_asking_for_what_parquet_cannot_hold_is_refused() {
     };
     let pk = r#""primary_key": ["buy_id"],"#;
     let cases = [
-        (with(pk, r#""primary_key": ["buy_id"], "decides": [{"by": "set_num", "columns": ["root_id"], "from": "sets"}],"#), "read through the join"),
-        (with(pk, r#""primary_key": ["buy_id"], "fold": "SELECT 1","#), "no engine here"),
-        (with(r#""keys": ["#, r#""keys": [{"name": "k2", "levels": ["qty"]}, "#), "another copy of the rows"),
-        (with(pk, r#""primary_key": ["buy_id"], "pieces": {"list": "root_id"},"#), "format 2 has no pieces"),
-        (with(r#""format": 2,"#, r#""format": 2, "hints": {},"#), "format 2 has no hints"),
-        (with(r#""format": 2,"#, r#""format": 3,"#), "this reads format 2"),
-        (with(r#"{"month": "placed_at"}"#, r#""nothing""#), "nothing is not a column"),
-        (with(r#"{"month": "placed_at"}"#, r#"{"month": "qty"}"#), "neither an instant nor a date"),
-        (with(r#"{"name": "buy_id", "type": "bigint", "null": false}"#, r#"{"name": "buy_id", "type": "bigint"}"#), "primary key's buy_id may hold null"),
-        (with(r#"{"name": "root_id", "type": "integer", "null": false}"#, r#"{"name": "root_id", "type": "integer"}"#), "a null has no place among the ranges"),
+        (
+            with(
+                pk,
+                r#""primary_key": ["buy_id"], "decides": [{"by": "set_num", "columns": ["root_id"], "from": "sets"}],"#,
+            ),
+            "read through the join",
+        ),
+        (
+            with(pk, r#""primary_key": ["buy_id"], "fold": "SELECT 1","#),
+            "no engine here",
+        ),
+        (
+            with(
+                r#""keys": ["#,
+                r#""keys": [{"name": "k2", "levels": ["qty"]}, "#,
+            ),
+            "another copy of the rows",
+        ),
+        (
+            with(
+                pk,
+                r#""primary_key": ["buy_id"], "pieces": {"list": "root_id"},"#,
+            ),
+            "format 2 has no pieces",
+        ),
+        (
+            with(r#""format": 2,"#, r#""format": 2, "hints": {},"#),
+            "format 2 has no hints",
+        ),
+        (
+            with(r#""format": 2,"#, r#""format": 3,"#),
+            "this reads format 2",
+        ),
+        (
+            with(r#"{"month": "placed_at"}"#, r#""nothing""#),
+            "nothing is not a column",
+        ),
+        (
+            with(r#"{"month": "placed_at"}"#, r#"{"month": "qty"}"#),
+            "neither an instant nor a date",
+        ),
+        (
+            with(
+                r#"{"name": "buy_id", "type": "bigint", "null": false}"#,
+                r#"{"name": "buy_id", "type": "bigint"}"#,
+            ),
+            "primary key's buy_id may hold null",
+        ),
+        (
+            with(
+                r#"{"name": "root_id", "type": "integer", "null": false}"#,
+                r#"{"name": "root_id", "type": "integer"}"#,
+            ),
+            "a null has no place among the ranges",
+        ),
         (with(r#""every": 7"#, r#""every": 0"#), "every 0 rows"),
-        (with(pk, r#""primary_key": ["buy_id"], "shards": 4,"#), "unknown field"),
-        (with(r#""name": "buy""#, r#""name": "Buy""#), "a name is lower-case"),
-        (with(r#""covers": ["qty"]"#, r#""covers": ["price"]"#), "covers price, which is not a column"),
+        (
+            with(pk, r#""primary_key": ["buy_id"], "shards": 4,"#),
+            "unknown field",
+        ),
+        (
+            with(r#""name": "buy""#, r#""name": "Buy""#),
+            "a name is lower-case",
+        ),
+        (
+            with(r#""covers": ["qty"]"#, r#""covers": ["price"]"#),
+            "covers price, which is not a column",
+        ),
     ];
     for (text, why) in cases {
         let got = refused_layout(&text);
@@ -419,7 +605,12 @@ fn refused_write(batch: &RecordBatch) -> String {
 
 fn replace_column(batch: &RecordBatch, name: &str, field: Field, array: ArrayRef) -> RecordBatch {
     let i = batch.schema().index_of(name).unwrap();
-    let mut fields: Vec<Field> = batch.schema().fields().iter().map(|f| f.as_ref().clone()).collect();
+    let mut fields: Vec<Field> = batch
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.as_ref().clone())
+        .collect();
     let mut columns = batch.columns().to_vec();
     fields[i] = field;
     columns[i] = array;
@@ -434,20 +625,34 @@ fn a_source_the_layout_cannot_hold_exactly_is_refused() {
     let missing = s.project(&[0, 1, 2, 3]).unwrap();
     assert!(refused_write(&missing).contains("has no column qty"));
 
-    let mut fields: Vec<Field> = s.schema().fields().iter().map(|f| f.as_ref().clone()).collect();
+    let mut fields: Vec<Field> = s
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.as_ref().clone())
+        .collect();
     fields.push(Field::new("price", DataType::Int32, true));
     let mut columns = s.columns().to_vec();
     columns.push(Arc::new(Int32Array::from(vec![1; n])));
     let extra = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
     assert!(refused_write(&extra).contains("holds price, which the layout does not name"));
 
-    let fraction = replace_column(&s, "qty", Field::new("qty", DataType::Float64, true), Arc::new(Float64Array::from(vec![1.5; n])));
+    let fraction = replace_column(
+        &s,
+        "qty",
+        Field::new("qty", DataType::Float64, true),
+        Arc::new(Float64Array::from(vec![1.5; n])),
+    );
     assert!(refused_write(&fraction).contains("no type for a fraction"));
 
     let zoneless = replace_column(
         &s,
         "placed_at",
-        Field::new("placed_at", DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, None), false),
+        Field::new(
+            "placed_at",
+            DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, None),
+            false,
+        ),
         Arc::new(TimestampMicrosecondArray::from(vec![0; n])),
     );
     assert!(refused_write(&zoneless).contains("name no zone"));
@@ -455,12 +660,21 @@ fn a_source_the_layout_cannot_hold_exactly_is_refused() {
     let nanos = replace_column(
         &s,
         "placed_at",
-        Field::new("placed_at", DataType::Timestamp(arrow::datatypes::TimeUnit::Nanosecond, Some("UTC".into())), false),
+        Field::new(
+            "placed_at",
+            DataType::Timestamp(arrow::datatypes::TimeUnit::Nanosecond, Some("UTC".into())),
+            false,
+        ),
         Arc::new(TimestampNanosecondArray::from(vec![1; n]).with_timezone("UTC")),
     );
     assert!(refused_write(&nanos).contains("carries nanoseconds"));
 
-    let wide = replace_column(&s, "root_id", Field::new("root_id", DataType::Int64, false), Arc::new(Int64Array::from(vec![1i64 << 40; n])));
+    let wide = replace_column(
+        &s,
+        "root_id",
+        Field::new("root_id", DataType::Int64, false),
+        Arc::new(Int64Array::from(vec![1i64 << 40; n])),
+    );
     assert!(refused_write(&wide).contains("does not fit a integer"));
 
     let nulls = replace_column(
@@ -471,10 +685,20 @@ fn a_source_the_layout_cannot_hold_exactly_is_refused() {
     );
     assert!(refused_write(&nulls).contains("holds none"));
 
-    let long = replace_column(&s, "set_num", Field::new("set_num", DataType::Utf8, false), Arc::new(StringArray::from(vec!["x".repeat(17); n])));
+    let long = replace_column(
+        &s,
+        "set_num",
+        Field::new("set_num", DataType::Utf8, false),
+        Arc::new(StringArray::from(vec!["x".repeat(17); n])),
+    );
     assert!(refused_write(&long).contains("holds at most 16"));
 
-    let texts = replace_column(&s, "root_id", Field::new("root_id", DataType::Utf8, false), Arc::new(StringArray::from(vec!["1"; n])));
+    let texts = replace_column(
+        &s,
+        "root_id",
+        Field::new("root_id", DataType::Utf8, false),
+        Arc::new(StringArray::from(vec!["1"; n])),
+    );
     assert!(refused_write(&texts).contains("which is not a integer"));
 
     let twice = rows(&s, &[0, 1, 2, 2]);

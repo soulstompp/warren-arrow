@@ -22,7 +22,10 @@ impl Certificate {
         let mut readers = Vec::with_capacity(table.columns.len());
         for col in &table.columns {
             let array = batch.column_by_name(&col.name).ok_or_else(|| {
-                Error::Refused(format!("{}: the rows hold no column {}", table.name, col.name))
+                Error::Refused(format!(
+                    "{}: the rows hold no column {}",
+                    table.name, col.name
+                ))
             })?;
             readers.push(Reader::new(&table.name, col, array.as_ref())?);
         }

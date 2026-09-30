@@ -164,7 +164,9 @@ impl Layout {
         match value.get("format").map(Value::as_u64) {
             Some(Some(n)) if n == u64::from(FORMAT) => {}
             Some(Some(n)) => {
-                return refuse(format!("the layout file is format {n}; this reads format {FORMAT}"));
+                return refuse(format!(
+                    "the layout file is format {n}; this reads format {FORMAT}"
+                ));
             }
             Some(None) => return refuse("not a layout file: its format is not a whole number"),
             None => return refuse("not a layout file: it names no format"),
@@ -172,7 +174,12 @@ impl Layout {
         if value.get("hints").is_some() {
             return refuse("format 2 has no hints");
         }
-        for t in value.get("tables").and_then(Value::as_array).into_iter().flatten() {
+        for t in value
+            .get("tables")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             let name = t.get("name").and_then(Value::as_str).unwrap_or("a table");
             for part in ["pieces", "postgres", "mysql"] {
                 if t.get(part).is_some() {
@@ -294,9 +301,10 @@ impl Table {
             for l in &k.levels {
                 let mut cols = Vec::new();
                 for c in l.columns() {
-                    cols.push(self.column(c).ok_or_else(|| {
-                        at(format!("key {}: {c} is not a column", k.name))
-                    })?);
+                    cols.push(
+                        self.column(c)
+                            .ok_or_else(|| at(format!("key {}: {c} is not a column", k.name)))?,
+                    );
                 }
                 match l {
                     Level::Column(_) if cols[0].ty == Type::Geography => {
@@ -323,14 +331,20 @@ impl Table {
             }
             for c in &k.covers {
                 if self.column(c).is_none() {
-                    return Err(at(format!("key {} covers {c}, which is not a column", k.name)));
+                    return Err(at(format!(
+                        "key {} covers {c}, which is not a column",
+                        k.name
+                    )));
                 }
             }
         }
 
         if let Some(p) = &self.partitions {
             let col = self.column(&p.range).ok_or_else(|| {
-                at(format!("the partitions range over {}, which is not a column", p.range))
+                at(format!(
+                    "the partitions range over {}, which is not a column",
+                    p.range
+                ))
             })?;
             if col.ty == Type::Geography {
                 return Err(at(format!(
@@ -359,7 +373,8 @@ fn name_ok(what: &str, name: &str) -> Result<(), Error> {
     let ok = !b.is_empty()
         && b.len() <= 63
         && (b[0].is_ascii_lowercase() || b[0] == b'_')
-        && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'_');
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'_');
     if ok {
         Ok(())
     } else {

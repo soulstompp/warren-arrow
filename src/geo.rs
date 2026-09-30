@@ -88,7 +88,10 @@ use crate::value::point;
 /// A field marked as a GEOGRAPHY column: WKB, spherical edges, and no CRS named, which is
 /// OGC:CRS84.
 pub fn geography_field(field: Field) -> Field {
-    field.with_extension_type(WkbType::new(Some(WkbMetadata::new(None, Some(WkbEdges::Spherical)))))
+    field.with_extension_type(WkbType::new(Some(WkbMetadata::new(
+        None,
+        Some(WkbEdges::Spherical),
+    ))))
 }
 
 /// The shortest arc of longitude holding every longitude given, as (west, east). West is greater

@@ -62,8 +62,7 @@ pub struct Written {
 
 /// A Parquet file's rows, read whole.
 pub fn read_source(path: &Path) -> Result<RecordBatch, Error> {
-    let file = File::open(path)
-        .map_err(|e| Error::Refused(format!("{}: {e}", path.display())))?;
+    let file = File::open(path).map_err(|e| Error::Refused(format!("{}: {e}", path.display())))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
     let schema = builder.schema().clone();
     let reader = builder.build()?;
@@ -200,17 +199,31 @@ fn typed(table: &Table, source: &RecordBatch) -> Result<RecordBatch, Error> {
     let mut columns = Vec::with_capacity(table.columns.len());
     for col in &table.columns {
         let array = source.column_by_name(&col.name).ok_or_else(|| {
-            Error::Refused(format!("{}: the source has no column {}", table.name, col.name))
+            Error::Refused(format!(
+                "{}: the source has no column {}",
+                table.name, col.name
+            ))
         })?;
         let reader = Reader::new(&table.name, col, array.as_ref())?;
-        columns.push(value::convert(&table.name, col, &reader, source.num_rows())?);
+        columns.push(value::convert(
+            &table.name,
+            col,
+            &reader,
+            source.num_rows(),
+        )?);
         fields.push(value::field(col));
     }
-    Ok(RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)?)
+    Ok(RecordBatch::try_new(
+        Arc::new(Schema::new(fields)),
+        columns,
+    )?)
 }
 
 fn converter(arrays: &[ArrayRef]) -> Result<Rows, Error> {
-    let options = SortOptions { descending: false, nulls_first: false };
+    let options = SortOptions {
+        descending: false,
+        nulls_first: false,
+    };
     let fields = arrays
         .iter()
         .map(|a| SortField::new_with_options(a.data_type().clone(), options))
@@ -226,7 +239,12 @@ fn unique_primary_key(table: &Table, batch: &RecordBatch) -> Result<(), Error> {
     let arrays: Vec<ArrayRef> = table
         .primary_key
         .iter()
-        .map(|c| batch.column_by_name(c).expect("typed by the layout").clone())
+        .map(|c| {
+            batch
+                .column_by_name(c)
+                .expect("typed by the layout")
+                .clone()
+        })
         .collect();
     let rows = converter(&arrays)?;
     let mut seen = HashSet::with_capacity(batch.num_rows());
@@ -251,7 +269,12 @@ fn order_arrays(table: &Table, batch: &RecordBatch) -> Result<Vec<ArrayRef>, Err
         for l in &k.levels {
             match l {
                 Level::Column(c) => {
-                    arrays.push(batch.column_by_name(c).expect("typed by the layout").clone());
+                    arrays.push(
+                        batch
+                            .column_by_name(c)
+                            .expect("typed by the layout")
+                            .clone(),
+                    );
                     used.insert(c);
                 }
                 Level::Part(p) => arrays.push(part(table, batch, p)),
@@ -259,9 +282,18 @@ fn order_arrays(table: &Table, batch: &RecordBatch) -> Result<Vec<ArrayRef>, Err
             }
         }
     }
-    for c in table.primary_key.iter().chain(table.columns.iter().map(|c| &c.name)) {
+    for c in table
+        .primary_key
+        .iter()
+        .chain(table.columns.iter().map(|c| &c.name))
+    {
         if used.insert(c) {
-            arrays.push(batch.column_by_name(c).expect("typed by the layout").clone());
+            arrays.push(
+                batch
+                    .column_by_name(c)
+                    .expect("typed by the layout")
+                    .clone(),
+            );
         }
     }
     Ok(arrays)
@@ -317,12 +349,18 @@ fn cut(
 ) -> Result<(Vec<Vec<u32>>, Vec<u32>), Error> {
     let n = batch.num_rows();
     if n == 0 {
-        return Err(Error::Refused(format!("{}: the source holds no rows", table.name)));
+        return Err(Error::Refused(format!(
+            "{}: the source holds no rows",
+            table.name
+        )));
     }
     let Some(p) = &table.partitions else {
         return Ok((vec![order.to_vec()], Vec::new()));
     };
-    let range = batch.column_by_name(&p.range).expect("typed by the layout").clone();
+    let range = batch
+        .column_by_name(&p.range)
+        .expect("typed by the layout")
+        .clone();
     let rows = converter(&[range])?;
     let mut by_range: Vec<usize> = (0..n).collect();
     by_range.sort_by(|a, b| rows.row(*a).cmp(&rows.row(*b)));
@@ -362,12 +400,20 @@ fn properties(table: &Table, schema: &SchemaRef, opts: &Options) -> WriterProper
     }
     let sorting = sorting
         .into_iter()
-        .map(|column_idx| SortingColumn { column_idx, descending: false, nulls_first: false })
+        .map(|column_idx| SortingColumn {
+            column_idx,
+            descending: false,
+            nulls_first: false,
+        })
         .collect::<Vec<_>>();
     let mut b = WriterProperties::builder()
         .set_compression(Compression::SNAPPY)
         .set_statistics_enabled(EnabledStatistics::Page)
-        .set_sorting_columns(if sorting.is_empty() { None } else { Some(sorting) });
+        .set_sorting_columns(if sorting.is_empty() {
+            None
+        } else {
+            Some(sorting)
+        });
     if let Some(n) = opts.max_row_group_rows {
         b = b.set_max_row_group_row_count(Some(n));
     }
@@ -382,8 +428,9 @@ fn write_pieces_file(
     pieces: &[Piece],
 ) -> Result<(), Error> {
     let mut fields = vec![Field::new("piece", DataType::Utf8, false)];
-    let mut columns: Vec<ArrayRef> =
-        vec![Arc::new(StringArray::from_iter_values(pieces.iter().map(|p| p.name.as_str())))];
+    let mut columns: Vec<ArrayRef> = vec![Arc::new(StringArray::from_iter_values(
+        pieces.iter().map(|p| p.name.as_str()),
+    ))];
     if let Some(range) = range {
         let from: UInt32Array = (0..pieces.len())
             .map(|i| (i > 0).then(|| bounds[i - 1]))
@@ -392,13 +439,23 @@ fn write_pieces_file(
             .map(|i| (i + 1 < pieces.len()).then(|| bounds[i]))
             .collect();
         let name = &table.partitions.as_ref().expect("a range").range;
-        fields.push(Field::new(format!("from_{name}"), range.data_type().clone(), true));
+        fields.push(Field::new(
+            format!("from_{name}"),
+            range.data_type().clone(),
+            true,
+        ));
         columns.push(take(range.as_ref(), &from, None)?);
-        fields.push(Field::new(format!("to_{name}"), range.data_type().clone(), true));
+        fields.push(Field::new(
+            format!("to_{name}"),
+            range.data_type().clone(),
+            true,
+        ));
         columns.push(take(range.as_ref(), &to, None)?);
     }
     fields.push(Field::new("rows", DataType::Int64, false));
-    columns.push(Arc::new(Int64Array::from_iter_values(pieces.iter().map(|p| p.rows as i64))));
+    columns.push(Arc::new(Int64Array::from_iter_values(
+        pieces.iter().map(|p| p.rows as i64),
+    )));
     fields.push(Field::new("row_groups", DataType::Int64, false));
     columns.push(Arc::new(Int64Array::from_iter_values(
         pieces.iter().map(|p| p.row_groups as i64),
@@ -406,7 +463,11 @@ fn write_pieces_file(
     write_small(&dir.join(PIECES_FILE), fields, columns)
 }
 
-fn write_certificate_file(dir: &Path, source: Certificate, written: Certificate) -> Result<(), Error> {
+fn write_certificate_file(
+    dir: &Path,
+    source: Certificate,
+    written: Certificate,
+) -> Result<(), Error> {
     let fields = vec![
         Field::new("side", DataType::Utf8, false),
         Field::new("rows", DataType::UInt64, false),
@@ -467,7 +528,11 @@ fn show(v: Value<'_>) -> String {
 
 /// The day number of the first of a month.
 fn days_before_month(y: i64, m: u32) -> i64 {
-    let (y, m) = if m <= 2 { (y - 1, i64::from(m) + 9) } else { (y, i64::from(m) - 3) };
+    let (y, m) = if m <= 2 {
+        (y - 1, i64::from(m) + 9)
+    } else {
+        (y, i64::from(m) - 3)
+    };
     let era = y.div_euclid(400);
     let yoe = y.rem_euclid(400);
     let doy = (153 * m + 2) / 5;
