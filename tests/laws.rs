@@ -92,9 +92,22 @@ fn rows(batch: &RecordBatch, indices: &[u32]) -> RecordBatch {
 }
 
 fn written(batch: &RecordBatch, opts: &Options) -> (tempfile::TempDir, warren_arrow::Written) {
+    written_with(&layout(), batch, opts)
+}
+
+fn written_with(
+    layout: &Layout,
+    batch: &RecordBatch,
+    opts: &Options,
+) -> (tempfile::TempDir, warren_arrow::Written) {
     let dir = tempfile::tempdir().expect("a directory");
-    let w = write_table(&layout(), "buy", batch, dir.path(), opts).expect("buy is written");
+    let w = write_table(layout, "buy", batch, dir.path(), opts).expect("buy is written");
     (dir, w)
+}
+
+/// The test layout with a piece every `every` rows, so a piece holds several roots.
+fn layout_every(every: u32) -> Layout {
+    Layout::parse(&LAYOUT.replace(r#""every": 7"#, &format!(r#""every": {every}"#))).expect("reads")
 }
 
 fn read(path: &Path) -> RecordBatch {
@@ -213,7 +226,7 @@ fn group_rows(file: &Path, group: usize) -> RecordBatch {
 #[test]
 fn every_row_groups_bounds_hold_its_rows_key_values() {
     let s = source(90);
-    let (_dir, w) = written(&s, &Options { max_row_group_rows: Some(4) });
+    let (_dir, w) = written_with(&layout_every(40), &s, &Options { max_row_group_rows: Some(4) });
     let mut groups = 0;
     for f in piece_files(&w) {
         for g in 0..row_groups(&f) {
@@ -235,8 +248,8 @@ fn every_row_groups_bounds_hold_its_rows_key_values() {
 #[test]
 fn row_groups_follow_one_another_along_the_leading_level() {
     let s = source(90);
-    let (_dir, w) = written(&s, &Options { max_row_group_rows: Some(4) });
-    let mut pairs = 0;
+    let (_dir, w) = written_with(&layout_every(40), &s, &Options { max_row_group_rows: Some(4) });
+    let (mut pairs, mut rising) = (0, 0);
     for f in piece_files(&w) {
         let n = row_groups(&f);
         for g in 1..n {
@@ -245,9 +258,11 @@ fn row_groups_follow_one_another_along_the_leading_level() {
             };
             assert!(before <= after, "{} group {g} starts at {after}, below {before}", f.display());
             pairs += 1;
+            rising += usize::from(before < after);
         }
     }
     assert!(pairs > 0, "some piece must hold two row groups");
+    assert!(rising > 0, "the leading level must change between some two row groups");
 }
 
 #[test]
