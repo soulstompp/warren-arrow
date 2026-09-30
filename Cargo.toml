@@ -1,0 +1,22 @@
+[package]
+name = "warren-arrow"
+version = "0.0.0"
+edition = "2024"
+description = "A warren in Parquet: each table of a layout file written as pieces of rows in key order, with the proof that the same rows were written"
+license = "Apache-2.0"
+publish = false
+
+[[bin]]
+name = "warren-arrow"
+path = "src/main.rs"
+
+[dependencies]
+arrow = { version = "58", default-features = false }
+parquet = { version = "58", default-features = false, features = ["arrow", "snap"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"
