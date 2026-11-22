@@ -144,8 +144,9 @@ impl Burrow {
     }
 
     /// Adds rows after those held. The rows are put in the key's order among themselves, and are
-    /// refused unless the least of them comes after the greatest row held, and no primary key
-    /// repeats one held or another added. A refused add leaves the burrow as it was.
+    /// refused if the least of them comes before the greatest row held, or a primary key repeats one
+    /// held or another added. With no primary key, a row equal to the greatest held is taken, as one
+    /// add takes repeated rows. A refused add leaves the burrow as it was.
     pub fn add(&mut self, rows: &RecordBatch) -> Result<(), Error> {
         let table = &self.layout.tables[self.at];
         let given = Certificate::of(table, rows)?;
@@ -160,10 +161,10 @@ impl Burrow {
         sorted.sort_by(|a, b| order.row(*a as usize).cmp(&order.row(*b as usize)));
         let least = order.row(sorted[0] as usize);
         if let Some(greatest) = &self.greatest
-            && least <= greatest.row()
+            && least < greatest.row()
         {
             return Err(Error::Refused(format!(
-                "{}: the rows added do not all come after the rows held in the key's order; a burrow adds rows only after those it holds",
+                "{}: a row added comes before the rows held in the key's order; a burrow adds rows only after those it holds",
                 table.name
             )));
         }

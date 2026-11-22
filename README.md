@@ -137,8 +137,8 @@ let proof = turns.certificate();
 ```
 
 - **Rows are added after those held.** An add's rows are typed and checked as `write` checks a
-  source, and put in the key's order among themselves. They are refused unless every one comes
-  after the rows held and no primary key repeats one held. A refused add changes nothing, and
+  source, and put in the key's order among themselves. They are refused if one comes before the
+  rows held, or a primary key repeats one held. A refused add changes nothing, and
   nothing held ever moves.
 - **A read takes a prefix of the key and any conditions.** The prefix is the values of the key's
   first levels (a conversation, or a conversation and its turn), and its rows are found without

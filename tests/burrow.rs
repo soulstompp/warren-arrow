@@ -519,3 +519,33 @@ fn a_burrow_is_shared_between_threads() {
     fn shared<T: Send + Sync>() {}
     shared::<Burrow>();
 }
+
+#[test]
+fn with_no_primary_key_repeated_rows_are_held_however_they_were_added() {
+    let open = Arc::new(Layout::parse(&LAYOUT.replace(r#"["buy_id"]"#, "[]")).unwrap());
+    let one = held(&Burrow::begin(&open, "buy", &source(20)).unwrap());
+    let twice = all(&[one.clone(), one.clone()]);
+    let at_once = Burrow::begin(&open, "buy", &twice).expect("one add takes the repeats");
+
+    // The same rows, each repeat in an add of its own.
+    let mut added = Burrow::begin(&open, "buy", &one.slice(0, 0)).unwrap();
+    for r in 0..one.num_rows() {
+        added.add(&one.slice(r, 1)).unwrap();
+        added
+            .add(&one.slice(r, 1))
+            .expect("a row equal to the greatest held");
+    }
+    let table = added.table();
+    assert_eq!(added.certificate(), at_once.certificate());
+    assert_eq!(
+        values(table, &whole(&added)),
+        values(table, &whole(&at_once))
+    );
+
+    let dir = tempfile::tempdir().expect("a directory");
+    let w = write_table(&open, "buy", &twice, dir.path(), &Options::default()).unwrap();
+    assert_eq!(added.certificate(), w.written);
+
+    // A row before the greatest held is still refused.
+    refused(added.add(&one.slice(0, 1)));
+}
