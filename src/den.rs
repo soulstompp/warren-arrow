@@ -96,7 +96,7 @@ struct Chunk {
 }
 
 /// Batches of fewer rows than this are merged as they arrive, each into the one before it when that
-/// holds no more rows than it does.
+/// holds no more than twice its rows.
 const MERGED_UNDER: usize = 1 << 16;
 
 /// How a den finds a repeated primary key.
@@ -270,7 +270,8 @@ impl Den {
         self.certificate = self.certificate.plus(certificate);
         self.rows += n;
         self.chunks.push(Chunk { rows: held, key });
-        merge(&self.key, &mut self.chunks)
+        merge(&self.key, &mut self.chunks);
+        Ok(())
     }
 
     /// The rows whose leading key levels hold `prefix`'s values, one value a level, kept where
@@ -493,22 +494,69 @@ fn leads_with_primary_key(table: &Table) -> bool {
     lead == primary
 }
 
-/// The last batch merged into the one before it while that holds no more rows than it does, and
-/// together they hold fewer than [`MERGED_UNDER`]. Small adds so become a few batches, and a row is
-/// copied a few times at most. A read taken before keeps the batches it was given.
-fn merge(key: &Option<RowConverter>, chunks: &mut Vec<Chunk>) -> Result<(), Error> {
+/// The last batch merged into the one before it while that holds no more than twice its rows, and
+/// together they hold fewer than [`MERGED_UNDER`]. Each batch so holds more than twice the rows of
+/// the one after it, or the two hold [`MERGED_UNDER`] or more together: small adds become a few
+/// batches however their sizes fall, and a row is copied a few times at most. Two batches that
+/// cannot be one, their text past what one Arrow array holds, stay two and hold the same rows. A
+/// read taken before keeps the batches it was given.
+fn merge(key: &Option<RowConverter>, chunks: &mut Vec<Chunk>) {
     while let [.., a, b] = &chunks[..] {
         let (an, bn) = (a.rows.num_rows(), b.rows.num_rows());
-        if an > bn || an + bn >= MERGED_UNDER {
+        if an > 2 * bn || an + bn >= MERGED_UNDER {
             break;
         }
-        let b = chunks.pop().expect("two batches");
-        let a = chunks.last_mut().expect("two batches");
-        a.rows = concat_batches(&a.rows.schema(), [&a.rows, &b.rows])?;
-        if let (Some(k), Some(ak), Some(bk)) = (key, a.key.as_mut(), b.key) {
-            let arrays = k.convert_rows(bk.iter())?;
-            k.append(ak, &arrays)?;
+        let Ok(both) = merged(key, a, b) else {
+            break;
+        };
+        chunks.pop();
+        *chunks.last_mut().expect("two batches") = both;
+    }
+}
+
+/// Two batches as one, made beside them so a merge that fails leaves both as they were.
+fn merged(key: &Option<RowConverter>, a: &Chunk, b: &Chunk) -> Result<Chunk, Error> {
+    let rows = concat_batches(&a.rows.schema(), [&a.rows, &b.rows])?;
+    let key = match (key, &a.key, &b.key) {
+        (Some(k), Some(ak), Some(bk)) => {
+            Some(k.convert_columns(&k.convert_rows(ak.iter().chain(bk.iter()))?)?)
+        }
+        _ => None,
+    };
+    Ok(Chunk { rows, key })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::datatypes::{Field, Schema};
+
+    fn chunk(column: ArrayRef) -> Chunk {
+        let schema = Schema::new(vec![Field::new("x", column.data_type().clone(), false)]);
+        Chunk {
+            rows: RecordBatch::try_new(Arc::new(schema), vec![column]).expect("a batch"),
+            key: None,
         }
     }
-    Ok(())
+
+    #[test]
+    fn a_merge_that_fails_leaves_both_batches_holding_their_rows() {
+        // Arrays of two types cannot be one, as text past what one array holds cannot.
+        let mut chunks = vec![
+            chunk(Arc::new(Int64Array::from(vec![1, 2]))),
+            chunk(Arc::new(Int32Array::from(vec![3]))),
+        ];
+        merge(&None, &mut chunks);
+        let held: Vec<usize> = chunks.iter().map(|c| c.rows.num_rows()).collect();
+        assert_eq!(held, [2, 1]);
+
+        // The same two batches of one type are merged.
+        let mut chunks = vec![
+            chunk(Arc::new(Int64Array::from(vec![1, 2]))),
+            chunk(Arc::new(Int64Array::from(vec![3]))),
+        ];
+        merge(&None, &mut chunks);
+        let held: Vec<usize> = chunks.iter().map(|c| c.rows.num_rows()).collect();
+        assert_eq!(held, [3]);
+    }
 }

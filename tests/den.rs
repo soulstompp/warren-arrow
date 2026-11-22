@@ -352,10 +352,10 @@ fn levels(batch: &RecordBatch) -> Vec<[Level; 3]> {
 fn a_prefix_reads_exactly_the_rows_holding_it() {
     let l = layout();
     let held = held(&Den::begin(&l, "buy", &source(60)).unwrap());
-    // Held as several batches, so a prefix's rows can run across them: each add holds fewer rows
-    // than the one before, so none is merged.
-    let mut b = Den::begin(&l, "buy", &held.slice(0, 30)).unwrap();
-    for (from, to) in [(30, 45), (45, 53), (53, 60)] {
+    // Held as several batches, so a prefix's rows can run across them: each add holds fewer than half
+    // the rows of the one before, so none is merged.
+    let mut b = Den::begin(&l, "buy", &held.slice(0, 33)).unwrap();
+    for (from, to) in [(33, 49), (49, 56), (56, 59), (59, 60)] {
         b.add(&held.slice(from, to - from)).unwrap();
     }
     let every = levels(&held);
@@ -584,6 +584,26 @@ fn small_adds_are_merged_and_a_read_taken_before_them_is_unchanged() {
             values(table, &at_once.read(&p, &[]).unwrap())
         );
     }
+}
+
+#[test]
+fn adds_whose_sizes_fall_are_merged_too() {
+    let l = layout();
+    let held = held(&Den::begin(&l, "buy", &source(5_050)).unwrap());
+    let mut d = Den::begin(&l, "buy", &held.slice(0, 0)).unwrap();
+    let mut from = 0;
+    for n in (1..=100).rev() {
+        d.add(&held.slice(from, n)).unwrap();
+        from += n;
+    }
+    let table = d.table();
+    assert_eq!(
+        values(table, &whole(&d)),
+        values(table, std::slice::from_ref(&held))
+    );
+    // A hundred adds, each one row fewer than the one before, are held as a few batches.
+    let batches = whole(&d).len();
+    assert!(batches <= 8, "{batches} batches");
 }
 
 const PLACES: &str = r#"{
