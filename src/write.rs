@@ -209,7 +209,7 @@ pub fn write_table(
 
 /// The source's columns in the layout's types and order. A source column the layout does not name
 /// is refused: dropping it would drop a fact.
-fn typed(table: &Table, source: &RecordBatch) -> Result<RecordBatch, Error> {
+pub(crate) fn typed(table: &Table, source: &RecordBatch) -> Result<RecordBatch, Error> {
     let schema = source.schema();
     let extra: Vec<&str> = schema
         .fields()
@@ -249,7 +249,7 @@ fn typed(table: &Table, source: &RecordBatch) -> Result<RecordBatch, Error> {
 }
 
 /// The batch with each stored level's part written as a smallint column after the layout's own.
-fn with_stored(table: &Table, batch: RecordBatch) -> Result<RecordBatch, Error> {
+pub(crate) fn with_stored(table: &Table, batch: RecordBatch) -> Result<RecordBatch, Error> {
     let stored = table.stored();
     if stored.is_empty() {
         return Ok(batch);
@@ -275,16 +275,20 @@ fn with_stored(table: &Table, batch: RecordBatch) -> Result<RecordBatch, Error> 
     )?)
 }
 
-fn converter(arrays: &[ArrayRef]) -> Result<Rows, Error> {
+/// How each array is compared when rows are put in order: least first, a missing value last.
+pub(crate) fn sort_fields(arrays: &[ArrayRef]) -> Vec<SortField> {
     let options = SortOptions {
         descending: false,
         nulls_first: false,
     };
-    let fields = arrays
+    arrays
         .iter()
         .map(|a| SortField::new_with_options(a.data_type().clone(), options))
-        .collect();
-    let conv = RowConverter::new(fields)?;
+        .collect()
+}
+
+fn converter(arrays: &[ArrayRef]) -> Result<Rows, Error> {
+    let conv = RowConverter::new(sort_fields(arrays))?;
     Ok(conv.convert_columns(arrays)?)
 }
 
@@ -317,7 +321,11 @@ fn unique_primary_key(table: &Table, batch: &RecordBatch) -> Result<(), Error> {
 }
 
 /// A level's value for each row.
-fn level_array(table: &Table, batch: &RecordBatch, l: &Level) -> Result<ArrayRef, Error> {
+pub(crate) fn level_array(
+    table: &Table,
+    batch: &RecordBatch,
+    l: &Level,
+) -> Result<ArrayRef, Error> {
     Ok(match l {
         Level::Column(c) => batch
             .column_by_name(c)
@@ -334,7 +342,7 @@ fn level_array(table: &Table, batch: &RecordBatch, l: &Level) -> Result<ArrayRef
 
 /// The arrays the rows are ordered by: the key's levels, then the primary key, then every other
 /// column in the layout's order, so that no two different rows tie.
-fn order_arrays(table: &Table, batch: &RecordBatch) -> Result<Vec<ArrayRef>, Error> {
+pub(crate) fn order_arrays(table: &Table, batch: &RecordBatch) -> Result<Vec<ArrayRef>, Error> {
     let mut arrays = Vec::new();
     let mut used: HashSet<&str> = HashSet::new();
     if let Some(k) = table.key() {

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1
+
+- A burrow holds one table of a layout in memory, in the order `write` gives it and under the same
+  certificate, with nothing written to disk. Rows are added only after those it holds, and read by a
+  prefix of the key and the conditions `kept` takes.
+
 ## 0.1.0
 
 The first release.
