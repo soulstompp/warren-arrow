@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Kenneth Allen Flegal
 // SPDX-License-Identifier: Apache-2.0
 
-//! A burrow: one table of a layout held in memory, its rows in the key's order, added to as rows
+//! A den: one table of a layout held in memory, its rows in the key's order, added to as rows
 //! arrive and read by the key. Nothing is written to disk. Its rows go to Parquet through
 //! [`write_table`](crate::write_table) whenever files are wanted, and carry the same certificate
 //! there.
@@ -13,7 +13,7 @@ use arrow::array::{
     Array, ArrayRef, BinaryArray, BooleanArray, Date32Array, Int16Array, Int32Array, Int64Array,
     RecordBatch, StringArray, TimestampMicrosecondArray, UInt32Array, new_null_array,
 };
-use arrow::compute::{filter_record_batch, take};
+use arrow::compute::{concat_batches, filter_record_batch, take};
 use arrow::datatypes::DataType;
 use arrow::row::{OwnedRow, Row, RowConverter, Rows};
 
@@ -37,7 +37,7 @@ use crate::write::{level_array, order_arrays, sort_fields, typed, with_stored};
 /// use arrow::array::{Int64Array, RecordBatch};
 /// use arrow::datatypes::{DataType, Field, Schema};
 /// use warren_arrow::Layout;
-/// use warren_arrow::burrow::Burrow;
+/// use warren_arrow::den::Den;
 /// use warren_arrow::value::Value;
 ///
 /// let layout = Arc::new(Layout::parse(r#"{
@@ -63,7 +63,7 @@ use crate::write::{level_array, order_arrays, sort_fields, typed, with_stored};
 ///     ])
 /// };
 ///
-/// let mut turns = Burrow::begin(&layout, "turns", &rows(vec![1, 1, 2], vec![1, 2, 1])?)?;
+/// let mut turns = Den::begin(&layout, "turns", &rows(vec![1, 1, 2], vec![1, 2, 1])?)?;
 /// turns.add(&rows(vec![2, 3], vec![2, 1])?)?;
 /// assert!(turns.add(&rows(vec![1], vec![3])?).is_err());
 ///
@@ -72,7 +72,7 @@ use crate::write::{level_array, order_arrays, sort_fields, typed, with_stored};
 /// assert_eq!(turns.len(), 5);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub struct Burrow {
+pub struct Den {
     layout: Arc<Layout>,
     at: usize,
     /// Compares whole rows, in the order they are held.
@@ -81,26 +81,47 @@ pub struct Burrow {
     key: Option<RowConverter>,
     /// The type each key level is compared as.
     key_types: Vec<DataType>,
-    /// Compares the primary key alone; none for a table with no primary key.
-    primary: Option<RowConverter>,
+    /// How a repeated primary key is found.
+    primary: Primary,
     chunks: Vec<Chunk>,
     greatest: Option<OwnedRow>,
-    primary_keys: HashSet<OwnedRow>,
     certificate: Certificate,
     rows: usize,
 }
 
-/// The rows of one add, in order, beside their key's levels as compared.
+/// Rows held one after another, in order, beside their key's levels as compared.
 struct Chunk {
     rows: RecordBatch,
     key: Option<Rows>,
 }
 
-impl Burrow {
-    /// A burrow holding a layout table's rows, which may be none. The rows are typed to the
+/// Batches of fewer rows than this are merged as they arrive, each into the one before it when that
+/// holds no more rows than it does.
+const MERGED_UNDER: usize = 1 << 16;
+
+/// How a den finds a repeated primary key.
+enum Primary {
+    /// The table has none.
+    None,
+    /// The key begins with the primary key's columns, so the rows' order holds every primary key in
+    /// order: one repeated is equal to the one before it, or to the greatest held.
+    Ordered {
+        compare: RowConverter,
+        columns: usize,
+        greatest: Option<OwnedRow>,
+    },
+    /// Otherwise every primary key held is kept.
+    Kept {
+        compare: RowConverter,
+        keys: HashSet<OwnedRow>,
+    },
+}
+
+impl Den {
+    /// A den holding a layout table's rows, which may be none. The rows are typed to the
     /// layout, put in the key's order and certified, as [`write_table`](crate::write_table)
     /// takes a source.
-    pub fn begin(layout: &Arc<Layout>, name: &str, rows: &RecordBatch) -> Result<Burrow, Error> {
+    pub fn begin(layout: &Arc<Layout>, name: &str, rows: &RecordBatch) -> Result<Den, Error> {
         let at = layout
             .tables
             .iter()
@@ -119,14 +140,22 @@ impl Burrow {
             Some(_) => Some(RowConverter::new(sort_fields(&levels))?),
             None => None,
         };
-        let primary = if table.primary_key.is_empty() {
-            None
+        let columns = table.primary_key.len();
+        let primary = if columns == 0 {
+            Primary::None
+        } else if leads_with_primary_key(table) {
+            Primary::Ordered {
+                compare: RowConverter::new(sort_fields(&levels[..columns]))?,
+                columns,
+                greatest: None,
+            }
         } else {
-            Some(RowConverter::new(sort_fields(&primary_arrays(
-                table, &batch,
-            )))?)
+            Primary::Kept {
+                compare: RowConverter::new(sort_fields(&primary_arrays(table, &batch)))?,
+                keys: HashSet::new(),
+            }
         };
-        let mut burrow = Burrow {
+        let mut den = Den {
             layout: Arc::clone(layout),
             at,
             order,
@@ -135,18 +164,17 @@ impl Burrow {
             primary,
             chunks: Vec::new(),
             greatest: None,
-            primary_keys: HashSet::new(),
             certificate: Certificate::default(),
             rows: 0,
         };
-        burrow.add(rows)?;
-        Ok(burrow)
+        den.add(rows)?;
+        Ok(den)
     }
 
     /// Adds rows after those held. The rows are put in the key's order among themselves, and are
     /// refused if the least of them comes before the greatest row held, or a primary key repeats one
     /// held or another added. With no primary key, a row equal to the greatest held is taken, as one
-    /// add takes repeated rows. A refused add leaves the burrow as it was.
+    /// add takes repeated rows. A refused add leaves the den as it was.
     pub fn add(&mut self, rows: &RecordBatch) -> Result<(), Error> {
         let table = &self.layout.tables[self.at];
         let given = Certificate::of(table, rows)?;
@@ -164,24 +192,9 @@ impl Burrow {
             && least < greatest.row()
         {
             return Err(Error::Refused(format!(
-                "{}: a row added comes before the rows held in the key's order; a burrow adds rows only after those it holds",
+                "{}: a row added comes before the rows held in the key's order; a den adds rows only after those it holds",
                 table.name
             )));
-        }
-
-        let mut added_keys = HashSet::new();
-        if let Some(primary) = &self.primary {
-            let keys = primary.convert_columns(&primary_arrays(table, &batch))?;
-            for i in 0..n {
-                let k = keys.row(i);
-                if self.primary_keys.contains(&k.owned()) || !added_keys.insert(k.owned()) {
-                    return Err(Error::Refused(format!(
-                        "{}: row {i} repeats a primary key ({}) held or added before it",
-                        table.name,
-                        table.primary_key.join(", ")
-                    )));
-                }
-            }
         }
 
         let indices = UInt32Array::from(sorted.clone());
@@ -191,12 +204,54 @@ impl Burrow {
             .map(|c| take(c.as_ref(), &indices, None))
             .collect::<Result<Vec<_>, _>>()?;
         let ordered = RecordBatch::try_new(batch.schema(), columns)?;
+        let levels = key_arrays(table, &ordered)?;
+
+        let repeats = |row: u32| {
+            Error::Refused(format!(
+                "{}: row {row} repeats a primary key ({}) held or added before it",
+                table.name,
+                table.primary_key.join(", ")
+            ))
+        };
+        let mut added_keys = HashSet::new();
+        let mut greatest_key = None;
+        match &self.primary {
+            Primary::None => {}
+            Primary::Ordered {
+                compare,
+                columns,
+                greatest,
+            } => {
+                let keys = compare.convert_columns(&levels[..*columns])?;
+                if let Some(g) = greatest
+                    && keys.row(0) <= g.row()
+                {
+                    return Err(repeats(sorted[0]));
+                }
+                for (i, &row) in sorted.iter().enumerate().skip(1) {
+                    if keys.row(i) == keys.row(i - 1) {
+                        return Err(repeats(row));
+                    }
+                }
+                greatest_key = Some(keys.row(n - 1).owned());
+            }
+            Primary::Kept { compare, keys } => {
+                let added = compare.convert_columns(&primary_arrays(table, &batch))?;
+                for i in 0..n {
+                    let k = added.row(i).owned();
+                    if keys.contains(&k) || !added_keys.insert(k) {
+                        return Err(repeats(i as u32));
+                    }
+                }
+            }
+        }
+
         let key = match &self.key {
-            Some(k) => Some(k.convert_columns(&key_arrays(table, &ordered)?)?),
+            Some(k) => Some(k.convert_columns(&levels)?),
             None => None,
         };
-        // A level the key stores orders the rows and is not held: the burrow holds the layout's
-        // columns alone, so the rows it holds go to `write_table` or another burrow as they are.
+        // A level the key stores orders the rows and is not held: the den holds the layout's
+        // columns alone, so the rows it holds go to `write_table` or another den as they are.
         let held = ordered.project(&(0..table.columns.len()).collect::<Vec<_>>())?;
         let certificate = Certificate::of(table, &held)?;
         if certificate != given {
@@ -207,11 +262,15 @@ impl Burrow {
         }
 
         self.greatest = Some(order.row(sorted[n - 1] as usize).owned());
-        self.primary_keys.extend(added_keys);
+        match &mut self.primary {
+            Primary::None => {}
+            Primary::Ordered { greatest, .. } => *greatest = greatest_key,
+            Primary::Kept { keys, .. } => keys.extend(added_keys),
+        }
         self.certificate = self.certificate.plus(certificate);
         self.rows += n;
         self.chunks.push(Chunk { rows: held, key });
-        Ok(())
+        merge(&self.key, &mut self.chunks)
     }
 
     /// The rows whose leading key levels hold `prefix`'s values, one value a level, kept where
@@ -251,12 +310,12 @@ impl Burrow {
         Ok(out)
     }
 
-    /// The layout table the burrow holds.
+    /// The layout table the den holds.
     pub fn table(&self) -> &Table {
         &self.layout.tables[self.at]
     }
 
-    /// How many rows the burrow holds.
+    /// How many rows the den holds.
     pub fn len(&self) -> usize {
         self.rows
     }
@@ -410,4 +469,46 @@ fn one(table: &Table, l: &Level, v: &Value<'_>, dt: &DataType) -> Result<ArrayRe
         (Value::Wkb(b), DataType::Binary) => Arc::new(BinaryArray::from(vec![*b])),
         _ => return Err(refuse(fits)),
     })
+}
+
+/// Whether the key's first levels are the primary key's columns, in any order.
+fn leads_with_primary_key(table: &Table) -> bool {
+    let Some(key) = table.key() else {
+        return false;
+    };
+    let columns = table.primary_key.len();
+    if key.levels.len() < columns {
+        return false;
+    }
+    let mut lead: Vec<&str> = Vec::with_capacity(columns);
+    for l in &key.levels[..columns] {
+        match l {
+            Level::Column(c) => lead.push(c),
+            _ => return false,
+        }
+    }
+    let mut primary: Vec<&str> = table.primary_key.iter().map(String::as_str).collect();
+    lead.sort_unstable();
+    primary.sort_unstable();
+    lead == primary
+}
+
+/// The last batch merged into the one before it while that holds no more rows than it does, and
+/// together they hold fewer than [`MERGED_UNDER`]. Small adds so become a few batches, and a row is
+/// copied a few times at most. A read taken before keeps the batches it was given.
+fn merge(key: &Option<RowConverter>, chunks: &mut Vec<Chunk>) -> Result<(), Error> {
+    while let [.., a, b] = &chunks[..] {
+        let (an, bn) = (a.rows.num_rows(), b.rows.num_rows());
+        if an > bn || an + bn >= MERGED_UNDER {
+            break;
+        }
+        let b = chunks.pop().expect("two batches");
+        let a = chunks.last_mut().expect("two batches");
+        a.rows = concat_batches(&a.rows.schema(), [&a.rows, &b.rows])?;
+        if let (Some(k), Some(ak), Some(bk)) = (key, a.key.as_mut(), b.key) {
+            let arrays = k.convert_rows(bk.iter())?;
+            k.append(ak, &arrays)?;
+        }
+    }
+    Ok(())
 }

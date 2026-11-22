@@ -3,11 +3,11 @@
 
 //! A warren in Parquet. Each table of a layout file is written as pieces of rows in its key's
 //! order, and a certificate beside them shows that the rows written are the rows read. A table can
-//! also be held in memory as a [`burrow::Burrow`], in the same order and under the same certificate.
+//! also be held in memory as a [`den::Den`], in the same order and under the same certificate.
 
-pub mod burrow;
 pub mod certificate;
 pub mod cli;
+pub mod den;
 #[cfg(feature = "geo")]
 pub mod geo;
 pub mod layout;

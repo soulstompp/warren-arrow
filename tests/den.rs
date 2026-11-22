@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Kenneth Allen Flegal
 // SPDX-License-Identifier: Apache-2.0
 
-//! What a burrow must hold: the rows written to Parquet for the same source, the same rows however
+//! What a den must hold: the rows written to Parquet for the same source, the same rows however
 //! they were added, nothing added out of order or twice, and exactly the rows a read asks for.
 
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use arrow::array::{
 };
 use arrow::compute::{concat_batches, take};
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit, TimestampMicrosecondType};
-use warren_arrow::burrow::Burrow;
+use warren_arrow::den::Den;
 use warren_arrow::layout::{Part, Table};
 use warren_arrow::read::{Term, Values, holds};
 use warren_arrow::value::{self, Reader, Value};
@@ -141,12 +141,12 @@ fn values(table: &Table, batches: &[RecordBatch]) -> Vec<Vec<String>> {
     out
 }
 
-fn whole(b: &Burrow) -> Vec<RecordBatch> {
+fn whole(b: &Den) -> Vec<RecordBatch> {
     b.read(&[], &[]).expect("every row reads")
 }
 
 /// Every row held, in order, as one batch.
-fn held(b: &Burrow) -> RecordBatch {
+fn held(b: &Den) -> RecordBatch {
     all(&whole(b))
 }
 
@@ -159,10 +159,10 @@ fn refused<T>(r: Result<T, Error>) -> String {
 }
 
 #[test]
-fn a_burrow_holds_the_rows_write_table_writes_in_the_same_order() {
+fn a_den_holds_the_rows_write_table_writes_in_the_same_order() {
     let l = layout();
     let s = source(60);
-    let b = Burrow::begin(&l, "buy", &s).expect("the burrow begins");
+    let b = Den::begin(&l, "buy", &s).expect("the den begins");
 
     let dir = tempfile::tempdir().expect("a directory");
     let w = write_table(&l, "buy", &s, dir.path(), &Options::default()).expect("buy is written");
@@ -177,10 +177,10 @@ fn a_burrow_holds_the_rows_write_table_writes_in_the_same_order() {
     assert_eq!(b.certificate(), w.written);
     assert_eq!(b.len(), 60);
 
-    // The rows a burrow holds are a source as they are: the layout's columns, written again whole.
+    // The rows a den holds are a source as they are: the layout's columns, written again whole.
     let again = tempfile::tempdir().expect("a directory");
     let w2 = write_table(&l, "buy", &held(&b), again.path(), &Options::default())
-        .expect("a burrow's rows are written");
+        .expect("a den's rows are written");
     assert_eq!(w2.written, w.written);
     let names: Vec<&str> = b.table().columns.iter().map(|c| c.name.as_str()).collect();
     let held_names: Vec<String> = held(&b)
@@ -225,11 +225,11 @@ fn a_burrow_holds_the_rows_write_table_writes_in_the_same_order() {
 #[test]
 fn rows_added_in_order_are_the_rows_begun_with_at_once() {
     let l = layout();
-    let at_once = Burrow::begin(&l, "buy", &source(60)).expect("the burrow begins");
+    let at_once = Den::begin(&l, "buy", &source(60)).expect("the den begins");
     let held = held(&at_once);
 
-    // Each add's rows arrive last first; the burrow orders them among themselves.
-    let mut added = Burrow::begin(&l, "buy", &held.slice(0, 0)).expect("an empty burrow");
+    // Each add's rows arrive last first; the den orders them among themselves.
+    let mut added = Den::begin(&l, "buy", &held.slice(0, 0)).expect("an empty den");
     assert!(added.is_empty());
     for (from, to) in [(0, 13), (13, 41), (41, 60)] {
         added.add(&reversed(&held, from, to)).expect("in order");
@@ -242,7 +242,7 @@ fn rows_added_in_order_are_the_rows_begun_with_at_once() {
     assert_eq!(added.certificate(), at_once.certificate());
 
     // Seeded: one add's rows dropped.
-    let mut dropped = Burrow::begin(&l, "buy", &reversed(&held, 0, 13)).unwrap();
+    let mut dropped = Den::begin(&l, "buy", &reversed(&held, 0, 13)).unwrap();
     dropped.add(&reversed(&held, 41, 60)).unwrap();
     assert_ne!(dropped.certificate(), at_once.certificate());
     assert_ne!(
@@ -254,8 +254,8 @@ fn rows_added_in_order_are_the_rows_begun_with_at_once() {
 #[test]
 fn rows_that_do_not_come_after_those_held_are_refused_and_nothing_changes() {
     let l = layout();
-    let held = held(&Burrow::begin(&l, "buy", &source(60)).unwrap());
-    let mut b = Burrow::begin(&l, "buy", &held.slice(30, 30)).unwrap();
+    let held = held(&Den::begin(&l, "buy", &source(60)).unwrap());
+    let mut b = Den::begin(&l, "buy", &held.slice(30, 30)).unwrap();
     let before = (b.certificate(), values(b.table(), &whole(&b)));
 
     let why = refused(b.add(&held.slice(0, 30)));
@@ -273,8 +273,8 @@ fn rows_that_do_not_come_after_those_held_are_refused_and_nothing_changes() {
 #[test]
 fn a_primary_key_repeated_by_a_later_add_is_refused() {
     let l = layout();
-    let held = held(&Burrow::begin(&l, "buy", &source(60)).unwrap());
-    let mut b = Burrow::begin(&l, "buy", &held).unwrap();
+    let held = held(&Den::begin(&l, "buy", &source(60)).unwrap());
+    let mut b = Den::begin(&l, "buy", &held).unwrap();
 
     // The last row again, with a root past every root held: after them all in the key's order,
     // with a buy_id held.
@@ -304,7 +304,7 @@ fn a_primary_key_repeated_by_a_later_add_is_refused() {
 
     // Seeded: the same table with no primary key takes the row, so the order alone lets it in.
     let open = Arc::new(Layout::parse(&LAYOUT.replace(r#"["buy_id"]"#, "[]")).unwrap());
-    let mut loose = Burrow::begin(&open, "buy", &held).unwrap();
+    let mut loose = Den::begin(&open, "buy", &held).unwrap();
     loose.add(&later).expect("no primary key to repeat");
     assert_eq!(loose.len(), 61);
 }
@@ -351,10 +351,11 @@ fn levels(batch: &RecordBatch) -> Vec<[Level; 3]> {
 #[test]
 fn a_prefix_reads_exactly_the_rows_holding_it() {
     let l = layout();
-    let held = held(&Burrow::begin(&l, "buy", &source(60)).unwrap());
-    // Held as several adds, so a prefix's rows can run across them.
-    let mut b = Burrow::begin(&l, "buy", &held.slice(0, 11)).unwrap();
-    for (from, to) in [(11, 12), (12, 33), (33, 60)] {
+    let held = held(&Den::begin(&l, "buy", &source(60)).unwrap());
+    // Held as several batches, so a prefix's rows can run across them: each add holds fewer rows
+    // than the one before, so none is merged.
+    let mut b = Den::begin(&l, "buy", &held.slice(0, 30)).unwrap();
+    for (from, to) in [(30, 45), (45, 53), (53, 60)] {
         b.add(&held.slice(from, to - from)).unwrap();
     }
     let every = levels(&held);
@@ -411,8 +412,8 @@ fn a_prefix_reads_exactly_the_rows_holding_it() {
 #[test]
 fn terms_keep_exactly_the_rows_they_hold() {
     let l = layout();
-    let held = held(&Burrow::begin(&l, "buy", &source(60)).unwrap());
-    let mut b = Burrow::begin(&l, "buy", &held.slice(0, 25)).unwrap();
+    let held = held(&Den::begin(&l, "buy", &source(60)).unwrap());
+    let mut b = Den::begin(&l, "buy", &held.slice(0, 25)).unwrap();
     b.add(&held.slice(25, 35)).unwrap();
     let table = b.table();
     let every = levels(&held);
@@ -488,7 +489,7 @@ fn terms_keep_exactly_the_rows_they_hold() {
 #[test]
 fn a_read_the_table_cannot_answer_is_refused() {
     let l = layout();
-    let b = Burrow::begin(&l, "buy", &source(20)).unwrap();
+    let b = Den::begin(&l, "buy", &source(20)).unwrap();
     let why = refused(b.read(
         &[
             Value::Int(1),
@@ -511,24 +512,24 @@ fn a_read_the_table_cannot_answer_is_refused() {
         }],
     ));
     assert!(why.contains("colour"), "{why}");
-    refused(Burrow::begin(&l, "sell", &source(1)));
+    refused(Den::begin(&l, "sell", &source(1)));
 }
 
 #[test]
-fn a_burrow_is_shared_between_threads() {
+fn a_den_is_shared_between_threads() {
     fn shared<T: Send + Sync>() {}
-    shared::<Burrow>();
+    shared::<Den>();
 }
 
 #[test]
 fn with_no_primary_key_repeated_rows_are_held_however_they_were_added() {
     let open = Arc::new(Layout::parse(&LAYOUT.replace(r#"["buy_id"]"#, "[]")).unwrap());
-    let one = held(&Burrow::begin(&open, "buy", &source(20)).unwrap());
+    let one = held(&Den::begin(&open, "buy", &source(20)).unwrap());
     let twice = all(&[one.clone(), one.clone()]);
-    let at_once = Burrow::begin(&open, "buy", &twice).expect("one add takes the repeats");
+    let at_once = Den::begin(&open, "buy", &twice).expect("one add takes the repeats");
 
     // The same rows, each repeat in an add of its own.
-    let mut added = Burrow::begin(&open, "buy", &one.slice(0, 0)).unwrap();
+    let mut added = Den::begin(&open, "buy", &one.slice(0, 0)).unwrap();
     for r in 0..one.num_rows() {
         added.add(&one.slice(r, 1)).unwrap();
         added
@@ -548,4 +549,125 @@ fn with_no_primary_key_repeated_rows_are_held_however_they_were_added() {
 
     // A row before the greatest held is still refused.
     refused(added.add(&one.slice(0, 1)));
+}
+
+#[test]
+fn small_adds_are_merged_and_a_read_taken_before_them_is_unchanged() {
+    let l = layout();
+    let held = held(&Den::begin(&l, "buy", &source(60)).unwrap());
+    let mut d = Den::begin(&l, "buy", &held.slice(0, 0)).unwrap();
+    for r in 0..30 {
+        d.add(&held.slice(r, 1)).unwrap();
+    }
+    let early = whole(&d);
+    let early_values = values(d.table(), &early);
+    for r in 30..60 {
+        d.add(&held.slice(r, 1)).unwrap();
+    }
+    let table = d.table();
+    assert_eq!(values(table, &early), early_values);
+    assert_eq!(
+        values(table, &whole(&d)),
+        values(table, std::slice::from_ref(&held))
+    );
+    // Sixty adds of one row are held as a few batches, not sixty.
+    let batches = whole(&d).len();
+    assert!(batches <= 6, "{batches} batches");
+    for p in [
+        vec![Value::Int(1)],
+        vec![Value::Int(9), Value::Text("10-0")],
+    ] {
+        let read = d.read(&p, &[]).unwrap();
+        let at_once = Den::begin(&l, "buy", &held).unwrap();
+        assert_eq!(
+            values(table, &read),
+            values(table, &at_once.read(&p, &[]).unwrap())
+        );
+    }
+}
+
+const PLACES: &str = r#"{
+  "format": 2,
+  "name": "chat",
+  "tables": [{
+    "name": "places",
+    "columns": [
+      {"name": "turn", "type": "bigint", "null": false},
+      {"name": "place", "type": "integer", "null": false},
+      {"name": "token", "type": "integer", "null": false}
+    ],
+    "primary_key": PRIMARY,
+    "keys": [{"name": "places_key", "levels": LEVELS}]
+  }]
+}"#;
+
+fn places(primary: &str, levels: &str) -> Arc<Layout> {
+    Arc::new(
+        Layout::parse(&PLACES.replace("PRIMARY", primary).replace("LEVELS", levels))
+            .expect("the places layout reads"),
+    )
+}
+
+fn place_rows(rows: &[(i64, i32, i32)]) -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("turn", DataType::Int64, false),
+        Field::new("place", DataType::Int32, false),
+        Field::new("token", DataType::Int32, false),
+    ]));
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(
+                rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+            )),
+            Arc::new(Int32Array::from(
+                rows.iter().map(|r| r.1).collect::<Vec<_>>(),
+            )),
+            Arc::new(Int32Array::from(
+                rows.iter().map(|r| r.2).collect::<Vec<_>>(),
+            )),
+        ],
+    )
+    .unwrap()
+}
+
+#[test]
+fn keyed_by_its_primary_key_a_repeated_key_is_refused() {
+    for (primary, levels) in [
+        (r#"["turn", "place"]"#, r#"["turn", "place"]"#),
+        (r#"["place", "turn"]"#, r#"["turn", "place", "token"]"#),
+    ] {
+        let l = places(primary, levels);
+        let mut d = Den::begin(
+            &l,
+            "places",
+            &place_rows(&[(1, 0, 5), (1, 1, 6), (2, 0, 7)]),
+        )
+        .unwrap();
+        let before = d.certificate();
+        // The greatest key held again with a greater token: after it in the order.
+        let why = refused(d.add(&place_rows(&[(2, 0, 9)])));
+        assert!(why.contains("primary key"), "{primary} {levels}: {why}");
+        // Two rows of one add sharing a key, both after the rows held.
+        let why = refused(d.add(&place_rows(&[(3, 0, 1), (3, 0, 2)])));
+        assert!(why.contains("primary key"), "{primary} {levels}: {why}");
+        // An earlier key again, beside a good row.
+        refused(d.add(&place_rows(&[(1, 1, 9), (3, 0, 1)])));
+        assert_eq!(d.certificate(), before);
+        assert_eq!(d.len(), 3);
+        d.add(&place_rows(&[(3, 1, 1), (3, 0, 1)]))
+            .expect("the next keys");
+        d.add(&place_rows(&[(4, 0, 0)])).expect("the next turn");
+        assert_eq!(d.len(), 6);
+
+        // Seeded: with no primary key the same rows are taken, so the refusals are the key's.
+        let open = places("[]", levels);
+        let mut loose = Den::begin(&open, "places", &place_rows(&[(1, 0, 5), (2, 0, 7)])).unwrap();
+        loose
+            .add(&place_rows(&[(2, 0, 9)]))
+            .expect("no primary key");
+        loose
+            .add(&place_rows(&[(3, 0, 1), (3, 0, 2)]))
+            .expect("no primary key");
+    }
 }

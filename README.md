@@ -9,7 +9,7 @@ every page statistics a reader can use, and then reads everything back and check
 rows read back are the rows it was given does the table appear. A table the layout cannot hold
 exactly is refused with the reason, never rounded, cast loosely or written in part. A program that
 keeps a table while it runs can hold it in memory instead, in the same order and under the same
-proof: a [burrow](#holding-a-table-in-memory-a-burrow).
+proof: a [den](#holding-a-table-in-memory-a-den).
 
 ```sh
 warren-arrow write --layout shop.json --table buy=buy.parquet --into out/
@@ -122,15 +122,15 @@ warren-arrow index --layout shop.json --table buy --dir out/buy --column placed_
 - **`index`** writes every page of one column, its bounds and rows beside its row group's and its
   piece's footer, as a Parquet file, from the metadata alone.
 
-## Holding a table in memory: a burrow
+## Holding a table in memory: a den
 
-A burrow is one table of a layout held in memory, in the order `write` gives it and under the same
+A den is one table of a layout held in memory, in the order `write` gives it and under the same
 certificate, with nothing written to disk. It is for a program that keeps a table while it runs:
 it begins with the rows it has, adds rows as they arrive, and reads them by the key.
 
 ```rust
 let layout = Arc::new(Layout::parse(&text)?);
-let mut turns = Burrow::begin(&layout, "turns", &rows_so_far)?;
+let mut turns = Den::begin(&layout, "turns", &rows_so_far)?;
 turns.add(&rows_just_come)?;
 let conversation = turns.read(&[Value::Int(42)], &[])?;
 let proof = turns.certificate();
@@ -145,13 +145,13 @@ let proof = turns.certificate();
   looking at any others. The conditions are the ones `kept` takes, tested on each row the prefix
   found, or on every row held when there is no prefix. A month, year or weekday level takes its
   number, and a cell level its cell. Rows come back in the key's order as Arrow batches, sharing
-  the burrow's memory where no condition is given, so a read survives every later add.
+  the den's memory where no condition is given, so a read survives every later add.
 - **The proof is the certificate `write` gives.** Each add certifies the rows it holds against the
-  rows it was given, and a burrow's certificate is the one `write` gives the same rows, however
-  they were added. A burrow holds the layout's columns alone, so its rows go to `write_table` as
+  rows it was given, and a den's certificate is the one `write` gives the same rows, however
+  they were added. A den holds the layout's columns alone, so its rows go to `write_table` as
   they are whenever files are wanted.
 
-A burrow is a library type: one program holds it, adding under `&mut` and reading under `&`, and
+A den is a library type: one program holds it, adding under `&mut` and reading under `&`, and
 shares it between threads behind a lock of its own.
 
 ## Points on the globe
@@ -168,7 +168,7 @@ a layout with a `geography` column or a cell level is refused.
 ## As a library
 
 The binary is a thin layer over the crate: `Layout::parse` reads a layout, `write_table` writes and
-certifies one table, `burrow::Burrow` holds one in memory, `read` holds the reading tools above,
+certifies one table, `den::Den` holds one in memory, `read` holds the reading tools above,
 and `cli` parses a written table's arguments and a question's conditions the way the binary does,
 for a binary of your own.
 
